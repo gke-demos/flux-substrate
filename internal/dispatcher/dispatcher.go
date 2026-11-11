@@ -249,6 +249,7 @@ func New(cfg Config) (*Dispatcher, error) {
 	mux.HandleFunc("POST /api/auth/login", d.handleAuthLogin)
 	mux.HandleFunc("POST /api/auth/logout", d.handleAuthLogout)
 	d.registerActionRoutes(mux)
+	d.registerUIRoutes(mux)
 
 	d.handler = httputil.SecurityHeaders(mux)
 	return d, nil
