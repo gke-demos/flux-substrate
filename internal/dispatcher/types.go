@@ -54,10 +54,11 @@ const (
 	TriggerWave         TriggerReason = "wave"
 	TriggerRecover      TriggerReason = "recover"
 	TriggerReset        TriggerReason = "reset"
-	TriggerPoisonOOM    TriggerReason = "poison-oom"
-	TriggerPoisonRBAC   TriggerReason = "poison-rbac"
-	TriggerPoisonEgress TriggerReason = "poison-egress"
-	TriggerExternalRepo TriggerReason = "external-repo"
+	TriggerPoisonOOM       TriggerReason = "poison-oom"
+	TriggerPoisonRBAC      TriggerReason = "poison-rbac"
+	TriggerPoisonEgress    TriggerReason = "poison-egress"
+	TriggerPoisonBuggyCode TriggerReason = "poison-buggy-code"
+	TriggerExternalRepo    TriggerReason = "external-repo"
 )
 
 // ActorSpec describes the desired Workflow Actor provisioned via ActorBackend.
@@ -139,21 +140,25 @@ type WorkerPoolStatus struct {
 
 // FleetSummary reports top-level Mission-Control KPI metrics.
 type FleetSummary struct {
-	TotalTenants    int   `json:"totalTenants"`
-	ReadyTenants    int   `json:"readyTenants"`
-	ActiveActors    int   `json:"activeActors"`
-	SuspendedActors int   `json:"suspendedActors"`
-	CrashedActors   int   `json:"crashedActors"`
-	QueuedTurns     int   `json:"queuedTurns"`
-	WorkerCapacity  int   `json:"workerCapacity"`
-	ActiveSlots     int   `json:"activeSlots"`
-	PeakActiveSlots int   `json:"peakActiveSlots"`
-	TotalTurns      int64 `json:"totalTurns"`
-	SnapshotCount   int64 `json:"snapshotCount"`
-	MedianFetchMs   int64 `json:"medianFetchMs"`
-	MedianRenderMs  int64 `json:"medianRenderMs"`
-	MedianApplyMs   int64 `json:"medianApplyMs"`
-	MedianTurnMs    int64 `json:"medianTurnMs"`
+	TotalTenants        int    `json:"totalTenants"`
+	ReadyTenants        int    `json:"readyTenants"`
+	ActiveActors        int    `json:"activeActors"`
+	SuspendedActors     int    `json:"suspendedActors"`
+	CrashedActors       int    `json:"crashedActors"`
+	QueuedTurns         int    `json:"queuedTurns"`
+	WorkerCapacity      int    `json:"workerCapacity"`
+	ActiveSlots         int    `json:"activeSlots"`
+	PeakActiveSlots     int    `json:"peakActiveSlots"`
+	TotalTurns          int64  `json:"totalTurns"`
+	SnapshotCount       int64  `json:"snapshotCount"`
+	MedianFetchMs       int64  `json:"medianFetchMs"`
+	MedianCompileTestMs int64  `json:"medianCompileTestMs"`
+	MedianRenderMs      int64  `json:"medianRenderMs"`
+	MedianApplyMs       int64  `json:"medianApplyMs"`
+	MedianTurnMs        int64  `json:"medianTurnMs"`
+	DemoRepository      string `json:"demoRepository,omitempty"`
+	SharedRepoURL       string `json:"sharedRepoUrl,omitempty"`
+	SecretPosture       string `json:"secretPosture,omitempty"`
 }
 
 // TenantSummary captures fleet-grid status for one Tenant Environment.
@@ -179,6 +184,8 @@ type TenantSummary struct {
 	CommitSHA             string             `json:"commitSha,omitempty"`
 	LastCommitMessage     string             `json:"lastCommitMessage,omitempty"`
 	CacheHit              bool               `json:"cacheHit"`
+	BuildCacheHit         bool               `json:"buildCacheHit"`
+	SecretPosture         string             `json:"secretPosture,omitempty"`
 	TurnCount             int64              `json:"turnCount"`
 	CoalescedTriggers     int64              `json:"coalescedTriggers"`
 	SnapshotCount         int64              `json:"snapshotCount"`

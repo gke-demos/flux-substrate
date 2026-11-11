@@ -77,6 +77,12 @@ spec:
           env:
             - name: FLUX_SUBSTRATE_ACTOR_IMAGE
               value: ko://github.com/gke-demos/flux-substrate/cmd/flux-substrate
+            - name: GIT_SERVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-oci-auth
+                  key: token
+                  optional: true
           ports:
             - name: http
               containerPort: 8080

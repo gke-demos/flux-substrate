@@ -133,6 +133,36 @@ func TestDispatcherPoisonOOMContainmentRevertActorRecoveryAndFleetReset(t *testi
 		t.Errorf("expected StalledCondition removed after RevertActor recovery, got %+v", stalledAfter)
 	}
 
+	// 3b. Trigger fulfillment-api buggy pricing.go push (off-by-one cent discount regression)
+	// and verify build_test stage catches it before SSA apply, then recover via RevertActor.
+	buggyResp, err := ts.Client().Post(ts.URL+"/api/tenants/tenant-01/poison/buggy-code?wait=true", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /api/tenants/tenant-01/poison/buggy-code: %v", err)
+	}
+	defer buggyResp.Body.Close()
+	if buggyResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST poison/buggy-code status = %d, want 200", buggyResp.StatusCode)
+	}
+	detailBuggy, _ := stack.Dispatcher().SnapshotTenant("tenant-01")
+	if detailBuggy.Ready || detailBuggy.FailedStage != "build_test" {
+		t.Fatalf("tenant-01 after buggy pricing.go push: ready=%v failedStage=%q err=%q",
+			detailBuggy.Ready, detailBuggy.FailedStage, detailBuggy.LastError)
+	}
+	if !strings.Contains(detailBuggy.LastError, "TestCalculateTotal") {
+		t.Errorf("expected TestCalculateTotal failure in LastError, got %q", detailBuggy.LastError)
+	}
+
+	recBuggyResp, err := ts.Client().Post(ts.URL+"/api/tenants/tenant-01/recover?wait=true", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST recover after buggy-code: %v", err)
+	}
+	recBuggyResp.Body.Close()
+	recoveredAfterBuggy, _ := stack.Dispatcher().SnapshotTenant("tenant-01")
+	if !recoveredAfterBuggy.Ready || !recoveredAfterBuggy.BuildCacheHit {
+		t.Fatalf("tenant-01 after buggy-code RevertActor recover: ready=%v buildCacheHit=%v err=%q",
+			recoveredAfterBuggy.Ready, recoveredAfterBuggy.BuildCacheHit, recoveredAfterBuggy.LastError)
+	}
+
 	// 4. Crash tenant-03 and verify POST /api/reset restores the entire fleet in one click.
 	oom03, err := ts.Client().Post(ts.URL+"/api/tenants/tenant-03/poison/oom?wait=true", "application/json", nil)
 	if err != nil {
@@ -430,6 +460,8 @@ func TestDispatcherPresenterTokenSessionCSRFAndRateLimit(t *testing.T) {
 	protectedRoutes := []string{
 		"/api/tenants/tenant-01/commit",
 		"/api/wave",
+		"/api/push",
+		"/api/tenants/tenant-01/poison/buggy-code",
 		"/api/tenants/tenant-01/poison/oom",
 		"/api/tenants/tenant-01/poison/rbac",
 		"/api/tenants/tenant-01/poison/egress",

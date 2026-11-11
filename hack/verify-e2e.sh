@@ -7,15 +7,17 @@ BASE_URL="${FLUX_SUBSTRATE_URL:-http://127.0.0.1:8080}"
 echo "==> Verifying Mission-Control health at ${BASE_URL}/readyz"
 curl -fsS "${BASE_URL}/readyz" >/dev/null
 
-echo "==> Verifying 24-tenant fleet state at ${BASE_URL}/api/state"
-STATE_JSON="$(curl -fsS "${BASE_URL}/api/state")"
+echo "==> Verifying 24-tenant fleet state at ${BASE_URL}/api/state and ${BASE_URL}/api/status"
+STATE_JSON="$(curl -fsS "${BASE_URL}/api/status")"
 python3 - "${STATE_JSON}" << 'EOF'
 import json, sys
 data = json.loads(sys.argv[1])
 summary = data["summary"]
+assert summary.get("demoRepository") == "fulfillment-api", f"expected demoRepository=fulfillment-api, got {summary.get('demoRepository')}"
+assert summary.get("secretPosture") == "ZERO_AMBIENT_SECRETS", f"expected ZERO_AMBIENT_SECRETS, got {summary.get('secretPosture')}"
 assert summary["totalTenants"] == 24, f"expected 24 tenants, got {summary['totalTenants']}"
 assert summary["workerCapacity"] == 9, f"expected 9 worker slots, got {summary['workerCapacity']}"
-print(f"Verified fleet: {summary['readyTenants']}/{summary['totalTenants']} Ready, {summary['suspendedActors']} SUSPENDED, {summary['snapshotCount']} DurableDir snapshots")
+print(f"Verified fleet ({summary['demoRepository']}): {summary['readyTenants']}/{summary['totalTenants']} Ready, {summary['suspendedActors']} SUSPENDED, {summary['snapshotCount']} DurableDir snapshots")
 EOF
 
 echo "==> Verifying / and /about HTML routes"
@@ -26,6 +28,22 @@ echo "==> Triggering 24-Tenant Commit Wave across 9 WorkerPool slots"
 curl -fsS -X POST "${BASE_URL}/api/wave" \
   -H "Content-Type: application/json" \
   -d '{"message":"Verify 24-tenant Commit Wave"}' >/dev/null
+
+echo "==> Triggering fulfillment-api Buggy pricing.go Poison Push on tenant-01 and recovering via RevertActor"
+BUGGY_JSON="$(curl -fsS -X POST "${BASE_URL}/api/tenants/tenant-01/poison/buggy-code" \
+  -H "Content-Type: application/json" \
+  -d '{"wait":true}')"
+python3 - "${BUGGY_JSON}" << 'EOF'
+import json, sys
+data = json.loads(sys.argv[1])
+assert data.get("failedStage") == "build_test", f"expected failedStage=build_test, got {data}"
+assert data.get("ready") is False, f"expected ready=False on buggy pricing.go push, got {data}"
+print(f"Caught buggy pricing.go before SSA apply: {data.get('lastError')}")
+EOF
+
+curl -fsS -X POST "${BASE_URL}/api/tenants/tenant-01/recover" \
+  -H "Content-Type: application/json" \
+  -d '{"wait":true}' >/dev/null
 
 echo "==> Triggering Memory-Bomb Kustomize OOM Poison Pill on tenant-01 and recovering via RevertActor"
 curl -fsS -X POST "${BASE_URL}/api/tenants/tenant-01/poison/oom" \

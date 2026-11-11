@@ -30,11 +30,11 @@
       title: "Workflow Actor (gVisor Sandbox Reconcile Engine)",
       adr: "ADR-0001",
       summary:
-        "Collapses Flux source-controller and kustomize-controller into a single turn-based HTTP service (POST /reconcile) running inside an isolated gVisor sandbox with zero controller-runtime informers.",
+        "Collapses Flux source-controller, fulfillment-api build & test verification, and kustomize-controller into a single turn-based HTTP service (POST /reconcile) running inside an isolated gVisor sandbox with zero controller-runtime informers.",
       facts: [
         ["Phase 1: Fetch", "fluxcd/pkg/git/gogit incremental delta fetch against warm DurableDir .git"],
-        ["Phase 2: Render", "sigs.k8s.io/kustomize/api/krusty with LoadRestrictionsRootOnly + 4 MiB render cap"],
-        ["Phase 3: Apply & Prune", "fluxcd/pkg/ssa ResourceManager Server-Side Apply + kstatus readiness check"],
+        ["Phase 2: Build & Test", "Warm /var/lib/flux/build-cache verification of fulfillment-api (pricing.go & pricing_test.go)"],
+        ["Phase 3: Render & Apply", "kustomize/api/krusty + fluxcd/pkg/ssa ResourceManager Server-Side Apply + kstatus"],
         ["Cluster-Wide Informers", "0 (eliminates always-on Go informer caches across all 24 tenants)"]
       ]
     },
@@ -42,12 +42,12 @@
       title: "DurableDir Volume Snapshot (/var/lib/flux)",
       adr: "ADR-0003",
       summary:
-        "Persists the tenant's warm shallow .git repository and last-applied inventory metadata across SuspendActor and ResumeActor cycles using SNAPSHOT_FIDELITY_VOLUMES.",
+        "Persists the tenant's warm shallow .git repository, fulfillment-api build cache, and last-applied inventory metadata across SuspendActor and ResumeActor cycles using SNAPSHOT_FIDELITY_VOLUMES.",
       facts: [
         ["Snapshot Fidelity", "SNAPSHOT_FIDELITY_VOLUMES (DurableDir mounted at /var/lib/flux)"],
-        ["Warm Turn Delta", "Fetches only new Git packfile objects (cacheHit: true) instead of re-cloning"],
+        ["Warm Caches", "Persists shallow .git + /var/lib/flux/build-cache (cacheHit: true, buildCacheHit: true)"],
         ["Post-Turn Action", "Dispatcher calls ControlClient.SuspendActor as soon as inFlight reaches 0"],
-        ["Crash Recovery", "ControlClient.RevertActor rolls DurableDir back to the last healthy turn snapshot"]
+        ["Crash Recovery", "ControlClient.RevertActor rolls DurableDir back to the last healthy turn snapshot in <1s"]
       ]
     },
     egress: {

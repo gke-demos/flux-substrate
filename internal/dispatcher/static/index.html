@@ -18,7 +18,7 @@
       </span>
       <div>
         <h1 class="brand-title">FluxCD on Agent Substrate</h1>
-        <p class="brand-subtitle">Turn-Based Workflow Actors · SNAPSHOT_FIDELITY_VOLUMES · 24:3 WorkerPool Multiplexing</p>
+        <p class="brand-subtitle">fulfillment-api · Turn-Based Workflow Actors · ZERO_AMBIENT_SECRETS · 24:3 WorkerPool Multiplexing</p>
       </div>
     </div>
 
@@ -125,7 +125,7 @@
         </div>
         <div id="kpi-median-turn" class="kpi-value mono">0 ms</div>
         <div class="kpi-subtext mono">
-          <span id="kpi-phase-breakdown">Fetch 0ms · Render 0ms · Apply 0ms</span>
+          <span id="kpi-phase-breakdown">Fetch 0ms · Build/Test 0ms · Render 0ms · Apply 0ms</span>
         </div>
       </article>
 
@@ -169,6 +169,14 @@
       </div>
 
       <div class="action-group">
+        <button id="btn-poison-buggy" type="button" class="btn btn-danger" title="Push pricing.go off-by-one cent discount regression caught by warm Build &amp; Test before SSA apply">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="16 18 22 12 16 6"></polyline>
+            <polyline points="8 6 2 12 8 18"></polyline>
+          </svg>
+          <span>Poison: Buggy pricing.go</span>
+        </button>
+
         <button id="btn-poison-oom" type="button" class="btn btn-danger" title="Commit dense Kustomize amplification overlay to trigger ACTOR_STATE_CRASHED">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
@@ -284,12 +292,17 @@
             <span id="val-fetch">0 ms</span>
           </div>
           <div class="phase-row mono">
-            <span>2. Kustomize</span>
+            <span>2. Build &amp; Test</span>
+            <progress id="prog-compile" class="phase-progress" value="0" max="100"></progress>
+            <span id="val-compile">0 ms</span>
+          </div>
+          <div class="phase-row mono">
+            <span>3. Kustomize</span>
             <progress id="prog-render" class="phase-progress" value="0" max="100"></progress>
             <span id="val-render">0 ms</span>
           </div>
           <div class="phase-row mono">
-            <span>3. SSA + kstatus</span>
+            <span>4. SSA + kstatus</span>
             <progress id="prog-apply" class="phase-progress" value="0" max="100"></progress>
             <span id="val-apply">0 ms</span>
           </div>

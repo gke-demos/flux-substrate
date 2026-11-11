@@ -11,10 +11,11 @@ type InventoryEntry struct {
 
 // PhaseTimings captures per-stage latencies (in milliseconds) for a single Reconcile Turn.
 type PhaseTimings struct {
-	FetchMs  int64 `json:"fetchMs"`
-	RenderMs int64 `json:"renderMs"`
-	ApplyMs  int64 `json:"applyMs"`
-	TotalMs  int64 `json:"totalMs"`
+	FetchMs       int64 `json:"fetchMs"`
+	CompileTestMs int64 `json:"compileTestMs"`
+	RenderMs      int64 `json:"renderMs"`
+	ApplyMs       int64 `json:"applyMs"`
+	TotalMs       int64 `json:"totalMs"`
 }
 
 // ReconcileRequest is the payload sent to POST /reconcile to execute one Reconcile Turn.
@@ -39,6 +40,8 @@ type ReconcileResult struct {
 	CommitSHA      string            `json:"commitSha,omitempty"`
 	Branch         string            `json:"branch,omitempty"`
 	CacheHit       bool              `json:"cacheHit"`
+	BuildCacheHit  bool              `json:"buildCacheHit"`
+	SecretPosture  string            `json:"secretPosture,omitempty"`
 	AppliedActions map[string]string `json:"appliedActions,omitempty"`
 	PrunedObjects  []string          `json:"prunedObjects"`
 	Inventory      []InventoryEntry  `json:"inventory"`
@@ -46,6 +49,7 @@ type ReconcileResult struct {
 	StatusMessage  string            `json:"statusMessage"`
 	Timings        PhaseTimings      `json:"timings"`
 	FetchMs        int64             `json:"fetchMs"`
+	CompileTestMs  int64             `json:"compileTestMs"`
 	RenderMs       int64             `json:"renderMs"`
 	ApplyMs        int64             `json:"applyMs"`
 	Error          string            `json:"error,omitempty"`

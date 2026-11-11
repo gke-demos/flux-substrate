@@ -468,9 +468,14 @@ func buildAteEgressRules(policy EgressPolicySpec) []*ateapi.EgressRule {
 			}
 		}
 		if gitScheme == "http" {
+			httpHosts := []string{gitHost}
+			const sharedDemoRepoHost = "git-oci.demo-repo.svc.cluster.local"
+			if gitHost != sharedDemoRepoHost {
+				httpHosts = append(httpHosts, sharedDemoRepoHost)
+			}
 			rules = append(rules, &ateapi.EgressRule{
 				Http: &ateapi.HttpRule{
-					Hostnames: []string{gitHost},
+					Hostnames: httpHosts,
 					Ports:     &ateapi.Ports{Numbers: []int32{80}},
 					Effects:   gitEffects,
 				},

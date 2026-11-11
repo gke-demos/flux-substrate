@@ -50,9 +50,11 @@ type gitWebhookPayload struct {
 func (d *Dispatcher) registerActionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tenants/{id}/commit", d.requirePresenterAuth(d.handleSingleTenantCommit))
 	mux.HandleFunc("POST /api/wave", d.requirePresenterAuth(d.handleCommitWave))
+	mux.HandleFunc("POST /api/push", d.requirePresenterAuth(d.handleRepoPush))
 	mux.HandleFunc("POST /api/tenants/{id}/poison/oom", d.requirePresenterAuth(d.handlePoisonOOM))
 	mux.HandleFunc("POST /api/tenants/{id}/poison/rbac", d.requirePresenterAuth(d.handlePoisonRBAC))
 	mux.HandleFunc("POST /api/tenants/{id}/poison/egress", d.requirePresenterAuth(d.handlePoisonEgress))
+	mux.HandleFunc("POST /api/tenants/{id}/poison/buggy-code", d.requirePresenterAuth(d.handlePoisonBuggyCode))
 	mux.HandleFunc("POST /api/tenants/{id}/recover", d.requirePresenterAuth(d.handleRecoverTenant))
 	mux.HandleFunc("POST /api/reset", d.requirePresenterAuth(d.handleFleetReset))
 	mux.HandleFunc("POST /api/repos/external", d.requirePresenterAuth(d.handleRegisterExternalRepo))
@@ -305,11 +307,57 @@ metadata:
   name: app-config
   namespace: %s
 data:
+  app: "fulfillment-api"
   tenant: %q
   release: %q
   channel: "stable"
   sequence: "%d"
 `, namespace, tenantID, release, seq)
+}
+
+// RepoPushRequest is the JSON body for POST /api/push, unifying fulfillment-api pushes across
+// the 24-tenant Commit Wave and bad-push (buggy-code / oom) scenarios.
+type RepoPushRequest struct {
+	Scenario string `json:"scenario,omitempty"`
+	TenantID string `json:"tenantId,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Release  string `json:"release,omitempty"`
+	Wait     bool   `json:"wait,omitempty"`
+}
+
+func (d *Dispatcher) handleRepoPush(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
+	if err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid push request body"})
+		return
+	}
+	var req RepoPushRequest
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid push JSON payload"})
+			return
+		}
+	}
+
+	tid := strings.TrimSpace(req.TenantID)
+	if tid == "" {
+		tid = "tenant-01"
+	}
+	r.SetPathValue("id", tid)
+	r.Body = io.NopCloser(strings.NewReader(string(raw)))
+
+	switch strings.ToLower(strings.TrimSpace(req.Scenario)) {
+	case "buggy-code", "buggy":
+		d.handlePoisonBuggyCode(w, r)
+	case "oom":
+		d.handlePoisonOOM(w, r)
+	case "rbac":
+		d.handlePoisonRBAC(w, r)
+	case "egress":
+		d.handlePoisonEgress(w, r)
+	default:
+		d.handleCommitWave(w, r)
+	}
 }
 
 func (d *Dispatcher) handleGitWebhookByID(w http.ResponseWriter, r *http.Request) {

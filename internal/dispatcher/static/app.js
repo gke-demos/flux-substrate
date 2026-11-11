@@ -160,7 +160,15 @@
     setText("kpi-median-turn", (s.medianTurnMs || 0) + " ms");
     setText(
       "kpi-phase-breakdown",
-      "Fetch " + (s.medianFetchMs || 0) + "ms · Render " + (s.medianRenderMs || 0) + "ms · Apply " + (s.medianApplyMs || 0) + "ms"
+      "Fetch " +
+        (s.medianFetchMs || 0) +
+        "ms · Build/Test " +
+        (s.medianCompileTestMs || 0) +
+        "ms · Render " +
+        (s.medianRenderMs || 0) +
+        "ms · Apply " +
+        (s.medianApplyMs || 0) +
+        "ms"
     );
 
     setText("kpi-snapshots", (s.snapshotCount || 0) + " Snapshots");
@@ -301,7 +309,11 @@
 
         var pill = document.createElement("span");
         pill.className = statePillClass(t.actorState, t.ready);
-        pill.textContent = t.actorState === "SUSPENDED" && !t.ready ? "FAILED (403)" : t.actorState;
+        if (t.actorState === "SUSPENDED" && !t.ready) {
+          pill.textContent = t.failedStage === "build_test" ? "FAILED (TEST)" : "FAILED (403)";
+        } else {
+          pill.textContent = t.actorState;
+        }
         head.appendChild(nameEl);
         head.appendChild(pill);
         card.appendChild(head);
@@ -321,7 +333,11 @@
         var row2 = document.createElement("div");
         row2.className = "tenant-meta-row mono";
         var cacheSpan = document.createElement("span");
-        cacheSpan.textContent = t.cacheHit ? "Warm .git delta" : "Cold clone";
+        cacheSpan.textContent = t.buildCacheHit
+          ? "Warm .git + build"
+          : t.cacheHit
+            ? "Warm .git delta"
+            : "Cold clone";
         var latSpan = document.createElement("span");
         var totalMs = t.timings ? t.timings.totalMs : 0;
         latSpan.textContent = totalMs + " ms · " + (t.snapshotCount || 0) + " snap";
@@ -412,9 +428,10 @@
         makeKVItem("Workflow Actor", (d.atespace || "flux-substrate") + "/" + d.actorName),
         makeKVItem("Target Namespace", d.targetNamespace || d.tenantId),
         makeKVItem("WorkerPool Slot", (d.workerId || "W1") + " / " + (d.slotId || "W1-1")),
-        makeKVItem("Warm DurableDir Cache", d.cacheHit ? "HIT (incremental fetch)" : "MISS (shallow clone)"),
-        makeKVItem("Turns / Coalesced", (d.turnCount || 0) + " turns / " + (d.coalescedTriggers || 0) + " coalesced"),
-        makeKVItem("Volume Snapshots", String(d.snapshotCount || 0)),
+        makeKVItem("Warm DurableDir Cache", d.cacheHit ? "HIT (incremental .git)" : "MISS (shallow clone)"),
+        makeKVItem("Warm Build Cache", d.buildCacheHit ? "HIT (/var/lib/flux/build-cache)" : "MISS (cold compile)"),
+        makeKVItem("Secret Posture", d.secretPosture || "ZERO_AMBIENT_SECRETS"),
+        makeKVItem("Volume Snapshots", String(d.snapshotCount || 0) + " (" + (d.turnCount || 0) + " turns)"),
         makeKVItem("Applied Revision", d.lastAppliedRevision || "none"),
         makeKVItem("Status / Error", d.lastError || d.statusMessage || "Healthy")
       );
@@ -422,15 +439,20 @@
 
     var timings = d.timings || {};
     var fetchMs = timings.fetchMs || 0;
+    var compileMs = timings.compileTestMs || 0;
     var renderMs = timings.renderMs || 0;
     var applyMs = timings.applyMs || 0;
-    var maxPhase = Math.max(fetchMs + renderMs + applyMs, 1);
+    var maxPhase = Math.max(fetchMs + compileMs + renderMs + applyMs, 1);
 
     var pFetch = document.getElementById("prog-fetch");
+    var pCompile = document.getElementById("prog-compile");
     var pRender = document.getElementById("prog-render");
     var pApply = document.getElementById("prog-apply");
     if (pFetch) {
       pFetch.value = Math.min(100, Math.round((fetchMs / maxPhase) * 100));
+    }
+    if (pCompile) {
+      pCompile.value = Math.min(100, Math.round((compileMs / maxPhase) * 100));
     }
     if (pRender) {
       pRender.value = Math.min(100, Math.round((renderMs / maxPhase) * 100));
@@ -439,6 +461,7 @@
       pApply.value = Math.min(100, Math.round((applyMs / maxPhase) * 100));
     }
     setText("val-fetch", fetchMs + " ms");
+    setText("val-compile", compileMs + " ms");
     setText("val-render", renderMs + " ms");
     setText("val-apply", applyMs + " ms");
 
@@ -527,6 +550,26 @@
           })
           .catch(function (err) {
             showBanner("Commit error: " + err.message);
+          });
+      });
+    }
+
+    var buggyBtn = document.getElementById("btn-poison-buggy");
+    if (buggyBtn) {
+      buggyBtn.addEventListener("click", function () {
+        showBanner("Pushing buggy fulfillment-api pricing.go (off-by-one cent discount regression) into " + selectedTenantId + "...");
+        apiPost("/api/tenants/" + encodeURIComponent(selectedTenantId) + "/poison/buggy-code", { wait: true })
+          .then(function (res) {
+            showBanner(
+              selectedTenantId +
+                " build & test caught pricing.go regression before SSA apply (" +
+                (res.lastError || res.error || "TestCalculateTotal failed") +
+                "). Click RevertActor Recover to roll back in <1s."
+            );
+            pollAll();
+          })
+          .catch(function (err) {
+            showBanner("Buggy pricing.go push error: " + err.message);
           });
       });
     }

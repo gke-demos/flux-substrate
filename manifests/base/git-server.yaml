@@ -25,6 +25,13 @@ spec:
             - --addr=:8080
             - --repos-dir=/var/lib/flux-git
             - --seed-count=24
+          env:
+            - name: GIT_SERVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-oci-auth
+                  key: token
+                  optional: true
           ports:
             - name: http
               containerPort: 8080

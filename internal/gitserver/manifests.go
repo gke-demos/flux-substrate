@@ -5,13 +5,43 @@ import (
 	"strings"
 )
 
-// DefaultTenantManifests returns the baseline Kustomize overlay files seeded for a
-// Tenant Environment (ConfigMap, Service, Deployment, and kustomization.yaml).
+// DefaultTenantManifests returns the baseline fulfillment-api Go source and Kustomize overlay files
+// seeded for a Tenant Environment (go.mod, main.go, pricing.go, pricing_test.go, ConfigMap, Service, Deployment, and kustomization.yaml).
 func DefaultTenantManifests(tenantID, targetNamespace string) map[string]string {
 	if targetNamespace == "" {
 		targetNamespace = tenantID
 	}
 	return map[string]string{
+		"go.mod": "module example.com/fulfillment-api\n\ngo 1.24\n",
+		"main.go": `package main
+
+import (
+	"fmt"
+	"net/http"
+)
+
+func main() {
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, "ok")
+	})
+	_ = http.ListenAndServe(":8080", nil)
+}
+`,
+		"pricing.go": CleanFulfillmentPricingGo,
+		"pricing_test.go": `package main
+
+import "testing"
+
+func TestCalculateTotal(t *testing.T) {
+	if got := CalculateTotal(10000, 1500); got != 8500 {
+		t.Fatalf("CalculateTotal(10000, 1500) = %d, want 8500", got)
+	}
+	if got := CalculateTotal(1000, 100); got != 900 {
+		t.Fatalf("CalculateTotal(1000, 100) = %d, want 900 (off-by-one cent in net total calculation)", got)
+	}
+}
+`,
 		"kustomization.yaml": `apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 labels:
@@ -29,6 +59,7 @@ metadata:
   name: app-config
   namespace: %s
 data:
+  app: "fulfillment-api"
   tenant: %q
   release: "v1"
   channel: "stable"
@@ -71,6 +102,46 @@ spec:
             - containerPort: 8080
 `, targetNamespace, tenantID, tenantID),
 	}
+}
+
+// CleanFulfillmentPricingGo is the baseline pricing.go source for fulfillment-api.
+const CleanFulfillmentPricingGo = `package main
+
+// CalculateTotal returns the net amount in cents after subtracting discountCents,
+// floored at zero so promotional discounts never produce a negative balance.
+func CalculateTotal(subtotalCents, discountCents int) int {
+	if discountCents <= 0 {
+		return subtotalCents
+	}
+	if discountCents >= subtotalCents {
+		return 0
+	}
+	return subtotalCents - discountCents
+}
+`
+
+// BuggyFulfillmentPricingGo contains the off-by-one cent discount regression in CalculateTotal.
+const BuggyFulfillmentPricingGo = `package main
+
+// CalculateTotal returns the net amount in cents after subtracting discountCents,
+// floored at zero so promotional discounts never produce a negative balance.
+func CalculateTotal(subtotalCents, discountCents int) int {
+	if discountCents <= 0 {
+		return subtotalCents
+	}
+	if discountCents >= subtotalCents {
+		return 0
+	}
+	return subtotalCents - discountCents - 1
+}
+`
+
+// BuggyCodeManifests returns a fulfillment-api commit with the off-by-one cent discount
+// regression in pricing.go to demonstrate build/test failure isolation and RevertActor recovery.
+func BuggyCodeManifests(tenantID, targetNamespace string) map[string]string {
+	m := DefaultTenantManifests(tenantID, targetNamespace)
+	m["pricing.go"] = BuggyFulfillmentPricingGo
+	return m
 }
 
 // MemoryBombManifests builds a dense Kustomize configMapGenerator amplification overlay

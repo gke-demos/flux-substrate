@@ -284,6 +284,76 @@ func (d *Dispatcher) handlePoisonEgress(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (d *Dispatcher) handlePoisonBuggyCode(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := d.validateTenantActionRequest(w, r)
+	if !ok {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	defer r.Body.Close()
+
+	var req PoisonPillRequest
+	if err := decodeOptionalJSON(r.Body, &req); err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid poison buggy-code JSON payload"})
+		return
+	}
+
+	d.schedMu.Lock()
+	ts, exists := d.tenants[tenantID]
+	var targetNS string
+	var prevTurns int64
+	if exists {
+		targetNS = ts.targetNamespace
+		prevTurns = ts.turnCount
+	}
+	d.schedMu.Unlock()
+	if !exists {
+		httputil.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+		return
+	}
+
+	msg := strings.TrimSpace(req.Message)
+	if msg == "" {
+		msg = fmt.Sprintf("Poison pill: fulfillment-api pricing.go off-by-one cent discount regression on %s", tenantID)
+	}
+
+	rev, err := d.gitServer.Commit(tenantID, gitserver.CommitChange{
+		ReplaceTree: true,
+		Upsert:      gitserver.BuggyCodeManifests(tenantID, targetNS),
+		Message:     msg,
+	})
+	if err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to commit buggy fulfillment-api source"})
+		return
+	}
+
+	d.schedMu.Lock()
+	ts.lastCommitMessage = rev.Message
+	ts.latestDiff = rev.SummaryDiff
+	d.schedMu.Unlock()
+
+	queued := d.Enqueue(tenantID, TriggerPoisonBuggyCode)
+	if shouldWaitRequest(r, req.Wait) && queued {
+		if err := d.waitForTenantsTurnProgress(r.Context(), map[string]int64{tenantID: prevTurns}); err != nil {
+			httputil.WriteJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "timed out waiting for buggy-code poison turn"})
+			return
+		}
+	}
+
+	detail, _ := d.SnapshotTenant(tenantID)
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"tenantId":    tenantID,
+		"scenario":    "buggy-code",
+		"revision":    rev,
+		"queued":      queued,
+		"actorState":  detail.ActorState,
+		"ready":       detail.Ready,
+		"failedStage": detail.FailedStage,
+		"lastError":   detail.LastError,
+	})
+}
+
 func (d *Dispatcher) handleRecoverTenant(w http.ResponseWriter, r *http.Request) {
 	tenantID := strings.TrimSpace(r.PathValue("id"))
 	if !validTenantIDRe.MatchString(tenantID) {

@@ -90,6 +90,8 @@ type tenantState struct {
 	lastCommitMessage string
 	latestDiff        string
 	cacheHit          bool
+	buildCacheHit     bool
+	secretPosture     string
 	turnCount         int64
 	coalescedTriggers int64
 	snapshotCount     int64
@@ -144,6 +146,7 @@ type Dispatcher struct {
 	eventSeq         atomic.Int64
 	events           []TurnEvent
 	fetchSamples     []int64
+	compileSamples   []int64
 	renderSamples    []int64
 	applySamples     []int64
 	turnSamples      []int64
@@ -244,6 +247,7 @@ func New(cfg Config) (*Dispatcher, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /readyz", d.handleReadyz)
 	mux.HandleFunc("GET /api/state", d.handleGetState)
+	mux.HandleFunc("GET /api/status", d.handleGetState)
 	mux.HandleFunc("GET /api/tenants/{id}", d.handleGetTenant)
 	mux.HandleFunc("GET /api/auth/session", d.handleAuthSession)
 	mux.HandleFunc("POST /api/auth/login", d.handleAuthLogin)
@@ -803,6 +807,12 @@ func (d *Dispatcher) recordCompletedTurn(
 	ts.updatedAt = now
 	ts.timings = res.Timings
 	ts.cacheHit = res.CacheHit
+	ts.buildCacheHit = res.BuildCacheHit
+	if res.SecretPosture != "" {
+		ts.secretPosture = res.SecretPosture
+	} else {
+		ts.secretPosture = "ZERO_AMBIENT_SECRETS"
+	}
 
 	if gr != nil {
 		ts.repoURL = gr.Spec.URL
@@ -922,6 +932,7 @@ func (d *Dispatcher) recordLatencySampleLocked(t actor.PhaseTimings) {
 		return buf
 	}
 	d.fetchSamples = appendBounded(d.fetchSamples, t.FetchMs)
+	d.compileSamples = appendBounded(d.compileSamples, max(1, t.CompileTestMs))
 	d.renderSamples = appendBounded(d.renderSamples, t.RenderMs)
 	d.applySamples = appendBounded(d.applySamples, t.ApplyMs)
 	d.turnSamples = appendBounded(d.turnSamples, t.TotalMs)
@@ -1098,15 +1109,19 @@ func (d *Dispatcher) SnapshotState() FleetStateResponse {
 			SuspendedActors: suspendedActors,
 			CrashedActors:   crashedActors,
 			QueuedTurns:     len(d.fifoQueue),
-			WorkerCapacity:  d.workerCount * d.slotsPerWorker,
-			ActiveSlots:     d.activeSlots,
-			PeakActiveSlots: d.peakActiveSlots,
-			TotalTurns:      d.totalTurns,
-			SnapshotCount:   d.totalSnapshots,
-			MedianFetchMs:   medianInt64(d.fetchSamples),
-			MedianRenderMs:  medianInt64(d.renderSamples),
-			MedianApplyMs:   medianInt64(d.applySamples),
-			MedianTurnMs:    medianInt64(d.turnSamples),
+			WorkerCapacity:      d.workerCount * d.slotsPerWorker,
+			ActiveSlots:         d.activeSlots,
+			PeakActiveSlots:     d.peakActiveSlots,
+			TotalTurns:          d.totalTurns,
+			SnapshotCount:       d.totalSnapshots,
+			MedianFetchMs:       medianInt64(d.fetchSamples),
+			MedianCompileTestMs: medianInt64(d.compileSamples),
+			MedianRenderMs:      medianInt64(d.renderSamples),
+			MedianApplyMs:       medianInt64(d.applySamples),
+			MedianTurnMs:        medianInt64(d.turnSamples),
+			DemoRepository:      "fulfillment-api",
+			SharedRepoURL:       "http://git-oci.demo-repo.svc.cluster.local/repo/fulfillment-api.git",
+			SecretPosture:       "ZERO_AMBIENT_SECRETS",
 		},
 		WorkerPool: WorkerPoolStatus{
 			Workers: workers,
@@ -1189,6 +1204,8 @@ func buildTenantSummaryLocked(ts *tenantState, queuePos int) TenantSummary {
 		CommitSHA:             ts.commitSHA,
 		LastCommitMessage:     ts.lastCommitMessage,
 		CacheHit:              ts.cacheHit,
+		BuildCacheHit:         ts.buildCacheHit,
+		SecretPosture:         ts.secretPosture,
 		TurnCount:             ts.turnCount,
 		CoalescedTriggers:     ts.coalescedTriggers,
 		SnapshotCount:         ts.snapshotCount,
