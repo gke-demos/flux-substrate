@@ -335,7 +335,7 @@ func StampFulfillmentBinary(shortSHA, promoBanner string, enterpriseDiscountBps 
 		return nil, "", errors.New("embedded fulfillment-api Linux amd64 binary is empty")
 	}
 
-	idx := bytes.Index(embeddedFulfillmentBinary, []byte(fulfillmentStampPrefix))
+	idx := bytes.Index(embeddedFulfillmentBinary, []byte(fulfillmentStampPrefix+`{"commit":`))
 	if idx < 0 || idx+fulfillmentStampSlotSize > len(embeddedFulfillmentBinary) {
 		return nil, "", errors.New("stamp slot marker not found in embedded fulfillment-api binary")
 	}
