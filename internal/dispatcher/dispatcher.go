@@ -16,6 +16,8 @@ import (
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -691,6 +693,15 @@ func (d *Dispatcher) executeSingleTurn(ctx context.Context, tenantID string, slo
 		}
 	}
 
+	var ociRegistryURL string
+	repoURLTrimmed := strings.TrimSpace(gr.Spec.URL)
+	if (tenantID == "tenant-01" || tenantID == "fulfillment-flux" || tenantID == "fulfillment-api") &&
+		strings.Contains(repoURLTrimmed, "git-oci.demo-repo.svc.cluster.local") {
+		if u, parseErr := url.Parse(repoURLTrimmed); parseErr == nil && u.Scheme != "" && u.Host != "" {
+			ociRegistryURL = u.Scheme + "://" + u.Host
+		}
+	}
+
 	res, statusCode, invokeErr := d.backend.InvokeReconcile(ctx, TurnInvocation{
 		Atespace:  d.atespace,
 		ActorName: actorName,
@@ -699,14 +710,33 @@ func (d *Dispatcher) executeSingleTurn(ctx context.Context, tenantID string, slo
 		Request: actor.ReconcileRequest{
 			TenantID:          tenantID,
 			WorkflowName:      ks.Name,
-			RepoURL:           strings.TrimSpace(gr.Spec.URL),
+			RepoURL:           repoURLTrimmed,
 			Branch:            branch,
 			Path:              overlayPath,
 			TargetNamespace:   targetNS,
 			Prune:             &prune,
 			PreviousInventory: prevInv,
+			OCIRegistryURL:    ociRegistryURL,
+			OCIRepository:     "fulfillment-api",
 		},
 	})
+
+	succeeded := invokeErr == nil && statusCode == 200 && res.Ready && res.Error == ""
+	if succeeded && (tenantID == "tenant-01" || tenantID == "fulfillment-flux" || tenantID == "fulfillment-api") {
+		if ociRegistryURL != "" && res.OCIDigest != "" {
+			_, _, _ = actor.PushFulfillmentOCI(
+				ctx,
+				nil,
+				ociRegistryURL,
+				"fulfillment-api",
+				"",
+				res.ShortSHA,
+				res.PromoBanner,
+				res.EnterpriseDiscountBps,
+			)
+		}
+		d.rolloutFulfillmentFluxDeployment(ctx, gr.Namespace, res)
+	}
 
 	updatedGR, updatedKS, _ := patchFluxTurnOutcome(ctx, d.kubeClient, actorName, grKey, ksKey, res, statusCode, invokeErr)
 	if updatedGR == nil {
@@ -717,6 +747,66 @@ func (d *Dispatcher) executeSingleTurn(ctx context.Context, tenantID string, slo
 	}
 
 	return d.recordCompletedTurn(tenantID, slot, reason, turnStart, updatedGR, updatedKS, res, statusCode, invokeErr)
+}
+
+func (d *Dispatcher) rolloutFulfillmentFluxDeployment(ctx context.Context, namespace string, res actor.ReconcileResult) {
+	ns := strings.TrimSpace(namespace)
+	if ns == "" {
+		ns = d.atespace
+	}
+	shortSHA := strings.TrimSpace(res.ShortSHA)
+	if shortSHA == "" && len(res.CommitSHA) >= 7 {
+		shortSHA = res.CommitSHA[:7]
+	}
+	if shortSHA == "" {
+		return
+	}
+	digest := strings.TrimSpace(res.OCIDigest)
+	tag := strings.TrimSpace(res.OCITag)
+	if tag == "" {
+		tag = "flux-latest"
+	}
+
+	key := client.ObjectKey{Namespace: ns, Name: "fulfillment-flux"}
+	for range 4 {
+		var dep appsv1.Deployment
+		if err := d.kubeClient.Get(ctx, key, &dep); err != nil {
+			return
+		}
+		if dep.Spec.Template.Annotations == nil {
+			dep.Spec.Template.Annotations = make(map[string]string)
+		}
+		dep.Spec.Template.Annotations["fulfillment.ate.dev/commit"] = shortSHA
+		if digest != "" {
+			dep.Spec.Template.Annotations["fulfillment.ate.dev/digest"] = digest
+		}
+		for i := range dep.Spec.Template.Spec.Containers {
+			c := &dep.Spec.Template.Spec.Containers[i]
+			if c.Name != "fulfillment-api" && len(dep.Spec.Template.Spec.Containers) > 1 {
+				continue
+			}
+			c.Env = upsertEnvVar(c.Env, "DEPLOYED_BY", "flux")
+			c.Env = upsertEnvVar(c.Env, "OCI_TAG", tag)
+			c.Env = upsertEnvVar(c.Env, "BUILD_COMMIT", shortSHA)
+			if digest != "" {
+				c.Env = upsertEnvVar(c.Env, "OCI_BLOB_DIGEST", digest)
+			}
+		}
+		if err := d.kubeClient.Update(ctx, &dep); err == nil {
+			return
+		}
+	}
+}
+
+func upsertEnvVar(envs []corev1.EnvVar, name, value string) []corev1.EnvVar {
+	for i := range envs {
+		if envs[i].Name == name {
+			envs[i].Value = value
+			envs[i].ValueFrom = nil
+			return envs
+		}
+	}
+	return append(envs, corev1.EnvVar{Name: name, Value: value})
 }
 
 func (d *Dispatcher) synthesizeEgressPolicy(gr *sourcev1.GitRepository, actorName string) (EgressPolicySpec, error) {

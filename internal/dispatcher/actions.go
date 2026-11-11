@@ -35,17 +35,26 @@ type WaveRequest struct {
 }
 
 type gitWebhookPayload struct {
-	TenantID   string `json:"tenantId,omitempty"`
-	RepoURL    string `json:"repoUrl,omitempty"`
-	Revision   string `json:"revision,omitempty"`
-	After      string `json:"after,omitempty"`
+	TenantID string `json:"tenantId,omitempty"`
+	RepoURL  string `json:"repoUrl,omitempty"`
+	Revision string `json:"revision,omitempty"`
+	After    string `json:"after,omitempty"`
+	Ref      string `json:"ref,omitempty"`
+	Wait     bool   `json:"wait,omitempty"`
+	Commits  []struct {
+		ID      string `json:"id,omitempty"`
+		Message string `json:"message,omitempty"`
+	} `json:"commits,omitempty"`
 	Repository struct {
 		Name     string `json:"name,omitempty"`
+		FullName string `json:"full_name,omitempty"`
 		CloneURL string `json:"clone_url,omitempty"`
 		HTMLURL  string `json:"html_url,omitempty"`
 		URL      string `json:"url,omitempty"`
 	} `json:"repository,omitempty"`
 }
+
+const defaultClusterGitOCIRepoURL = "http://git-oci.demo-repo.svc.cluster.local/repo/fulfillment-api.git"
 
 func (d *Dispatcher) registerActionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tenants/{id}/commit", d.requirePresenterAuth(d.handleSingleTenantCommit))
@@ -58,6 +67,8 @@ func (d *Dispatcher) registerActionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tenants/{id}/recover", d.requirePresenterAuth(d.handleRecoverTenant))
 	mux.HandleFunc("POST /api/reset", d.requirePresenterAuth(d.handleFleetReset))
 	mux.HandleFunc("POST /api/repos/external", d.requirePresenterAuth(d.handleRegisterExternalRepo))
+	mux.HandleFunc("POST /api/webhook/gitea", d.handleGiteaWebhook)
+	mux.HandleFunc("POST /webhook/gitea", d.handleGiteaWebhook)
 	mux.HandleFunc("POST /api/webhooks/git", d.handleGitWebhook)
 	mux.HandleFunc("POST /api/webhooks/git/{id}", d.handleGitWebhookByID)
 	mux.HandleFunc("POST /webhooks/git", d.handleGitWebhook)
@@ -99,6 +110,8 @@ func (d *Dispatcher) handleSingleTenantCommit(w http.ResponseWriter, r *http.Req
 		httputil.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
 		return
 	}
+
+	_ = d.restoreTenantBaselineSource(r.Context(), tenantID)
 
 	change := gitserver.CommitChange{
 		Upsert:  req.Upsert,
@@ -200,6 +213,7 @@ func (d *Dispatcher) handleCommitWave(w http.ResponseWriter, r *http.Request) {
 	revisions := make(map[string]string, len(targets))
 	diffs := make(map[string]gitserver.Revision, len(targets))
 	for _, tgt := range targets {
+		_ = d.restoreTenantBaselineSource(r.Context(), tgt.tenantID)
 		rev, err := d.gitServer.Commit(tgt.tenantID, gitserver.CommitChange{
 			Upsert: map[string]string{
 				"configmap.yaml": buildConfigMapManifest(tgt.targetNS, tgt.tenantID, rel, tgt.seq),
@@ -411,6 +425,136 @@ func (d *Dispatcher) handleGitWebhook(w http.ResponseWriter, r *http.Request) {
 		"accepted": len(enqueued) > 0,
 		"tenants":  enqueued,
 	})
+}
+
+func (d *Dispatcher) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	defer r.Body.Close()
+
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil && !errors.Is(err, io.EOF) {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read gitea webhook body"})
+		return
+	}
+
+	if secret := strings.TrimSpace(d.cfg.WebhookSecret); secret != "" {
+		if !verifyWebhookSignatureOrToken(r, rawBody, secret) {
+			httputil.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid webhook signature or token"})
+			return
+		}
+	}
+
+	var payload gitWebhookPayload
+	if len(strings.TrimSpace(string(rawBody))) > 0 {
+		if err := json.Unmarshal(rawBody, &payload); err != nil {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid gitea webhook JSON payload"})
+			return
+		}
+	}
+
+	targetRepoURL := strings.TrimSpace(payload.RepoURL)
+	if targetRepoURL == "" && d.mode == "dispatcher" {
+		targetRepoURL = defaultClusterGitOCIRepoURL
+	}
+
+	commitMsg := ""
+	if len(payload.Commits) > 0 {
+		commitMsg = strings.TrimSpace(payload.Commits[0].Message)
+	}
+
+	d.schedMu.Lock()
+	var ids []string
+	if tid := strings.TrimSpace(payload.TenantID); validTenantIDRe.MatchString(tid) {
+		if _, ok := d.tenants[tid]; ok {
+			ids = []string{tid}
+		}
+	}
+	if len(ids) == 0 {
+		for id, ts := range d.tenants {
+			if ts.actorState == ActorStateCrashed {
+				continue
+			}
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+	}
+	prevTurns := make(map[string]int64, len(ids))
+	ctrlNS := strings.TrimSpace(d.cfg.WatchNamespace)
+	if ctrlNS == "" {
+		ctrlNS = d.atespace
+	}
+	for _, id := range ids {
+		if ts, ok := d.tenants[id]; ok {
+			prevTurns[id] = ts.turnCount
+			if ts.grKey.Namespace != "" {
+				ctrlNS = ts.grKey.Namespace
+			}
+		}
+	}
+	d.schedMu.Unlock()
+
+	if len(ids) == 0 {
+		httputil.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "no managed tenants available"})
+		return
+	}
+
+	if targetRepoURL != "" {
+		_ = upsertGitTokenSecret(r.Context(), d.kubeClient, ctrlNS, "git-oci-auth", "substrate-multici-demo-token-2026")
+		for _, id := range ids {
+			overlayPath := "./"
+			if strings.Contains(targetRepoURL, "fulfillment-api") {
+				overlayPath = "./deploy/overlays/" + id
+			}
+			_ = d.pointTenantSourceToRepo(r.Context(), id, targetRepoURL, "git-oci-auth", overlayPath, commitMsg)
+		}
+	} else if commitMsg != "" {
+		d.schedMu.Lock()
+		for _, id := range ids {
+			if ts, ok := d.tenants[id]; ok {
+				ts.lastCommitMessage = commitMsg
+			}
+		}
+		d.schedMu.Unlock()
+	}
+
+	var enqueued []string
+	for _, id := range ids {
+		if d.Enqueue(id, TriggerWebhook) {
+			enqueued = append(enqueued, id)
+		}
+	}
+
+	if shouldWaitRequest(r, payload.Wait) && len(enqueued) > 0 {
+		if err := d.waitForTenantsTurnProgress(r.Context(), prevTurns); err != nil {
+			httputil.WriteJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "timed out waiting for Gitea webhook turns"})
+			return
+		}
+	}
+
+	httputil.WriteJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": len(enqueued) > 0,
+		"after":    payload.After,
+		"repoUrl":  targetRepoURL,
+		"tenants":  enqueued,
+	})
+}
+
+func verifyWebhookSignatureOrToken(r *http.Request, rawBody []byte, secret string) bool {
+	if tok := strings.TrimSpace(r.Header.Get("X-Webhook-Token")); tok != "" {
+		if subtle.ConstantTimeCompare([]byte(tok), []byte(secret)) == 1 {
+			return true
+		}
+	}
+	if sigHeader := strings.TrimSpace(r.Header.Get("X-Hub-Signature-256")); strings.HasPrefix(sigHeader, "sha256=") {
+		mac := hmac.New(sha256.New, []byte(secret))
+		_, _ = mac.Write(rawBody)
+		expectedHex := hex.EncodeToString(mac.Sum(nil))
+		presentedHex := strings.TrimPrefix(sigHeader, "sha256=")
+		if subtle.ConstantTimeCompare([]byte(presentedHex), []byte(expectedHex)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dispatcher) readAndVerifyWebhookBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {

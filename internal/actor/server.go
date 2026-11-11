@@ -3,13 +3,9 @@ package actor
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/parser"
-	"go/token"
 	"net/http"
 	"net/url"
 	"os"
@@ -335,14 +331,19 @@ func (s *Server) executeTurn(ctx context.Context, req ReconcileRequest) (Reconci
 	res.CommitSHA = commitSHA
 	res.Revision = fmt.Sprintf("%s@sha1:%s", branch, commitSHA)
 
-	// Stage 1.5: Warm fulfillment-api Build & Source Verification in DurableDir (/var/lib/flux/build-cache)
-	// plus ZERO_AMBIENT_SECRETS runtime verification.
+	// Stage 1.5: Warm fulfillment-api Build & Source Verification in DurableDir (/var/lib/flux/build-cache),
+	// live HTTP E2E test, static Linux amd64 binary stamping + OCI v2 push, and ZERO_AMBIENT_SECRETS runtime verification.
 	compileStart := time.Now()
-	buildCacheHit, secretPosture, buildErr := s.verifyFulfillmentBuildAndSecrets(checkoutDir, workflowKey, commitSHA)
+	buildMeta, buildErr := s.verifyFulfillmentBuildAndSecrets(ctx, checkoutDir, workflowKey, commitSHA, req.OCIRegistryURL, req.OCIRepository)
 	res.CompileTestMs = max(1, time.Since(compileStart).Milliseconds())
 	res.Timings.CompileTestMs = res.CompileTestMs
-	res.BuildCacheHit = buildCacheHit
-	res.SecretPosture = secretPosture
+	res.BuildCacheHit = buildMeta.BuildCacheHit
+	res.SecretPosture = buildMeta.SecretPosture
+	res.ShortSHA = buildMeta.ShortSHA
+	res.PromoBanner = buildMeta.PromoBanner
+	res.EnterpriseDiscountBps = buildMeta.EnterpriseDiscountBps
+	res.OCIDigest = buildMeta.OCIDigest
+	res.OCITag = buildMeta.OCITag
 	if buildErr != nil {
 		res.Timings.TotalMs = time.Since(turnStart).Milliseconds()
 		res.Error = fmt.Sprintf("fulfillment-api build & test verification failed: %v", buildErr)
@@ -1088,7 +1089,14 @@ func readTrimmedFile(paths ...string) string {
 	return ""
 }
 
-func (s *Server) verifyFulfillmentBuildAndSecrets(checkoutDir, workflowKey, commitSHA string) (bool, string, error) {
+func (s *Server) verifyFulfillmentBuildAndSecrets(
+	ctx context.Context,
+	checkoutDir string,
+	workflowKey string,
+	commitSHA string,
+	ociRegistryURL string,
+	ociRepo string,
+) (FulfillmentBuildMeta, error) {
 	secretPosture := "ZERO_AMBIENT_SECRETS"
 	for _, kv := range os.Environ() {
 		upper := strings.ToUpper(kv)
@@ -1103,57 +1111,63 @@ func (s *Server) verifyFulfillmentBuildAndSecrets(checkoutDir, workflowKey, comm
 
 	buildCacheDir, err := httputil.SecureSubpath(s.durableDir, "build-cache")
 	if err != nil {
-		return false, secretPosture, err
+		return FulfillmentBuildMeta{SecretPosture: secretPosture}, err
 	}
 	if err := os.MkdirAll(buildCacheDir, 0o750); err != nil {
-		return false, secretPosture, err
+		return FulfillmentBuildMeta{SecretPosture: secretPosture}, err
 	}
 	cacheFile, err := httputil.SecureSubpath(buildCacheDir, workflowKey+".buildcache.json")
 	if err != nil {
-		return false, secretPosture, err
+		return FulfillmentBuildMeta{SecretPosture: secretPosture}, err
 	}
 
 	_, statErr := os.Stat(cacheFile)
 	buildCacheHit := statErr == nil
 
-	var pricingPath string
-	for _, rel := range []string{"pricing.go", filepath.Join("source", "app", "pricing.go")} {
-		candidate := filepath.Join(checkoutDir, rel)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			pricingPath = candidate
-			break
-		}
+	meta, testErr := ParseAndTestFulfillmentSource(ctx, checkoutDir, commitSHA)
+	meta.BuildCacheHit = buildCacheHit
+	meta.SecretPosture = secretPosture
+	if testErr != nil {
+		return meta, testErr
 	}
 
-	h := sha256.New()
-	if pricingPath != "" {
-		srcBytes, err := os.ReadFile(pricingPath)
-		if err != nil {
-			return buildCacheHit, secretPosture, fmt.Errorf("read pricing.go: %w", err)
-		}
-		_, _ = h.Write(srcBytes)
+	if _, digest, stampErr := StampFulfillmentBinary(meta.ShortSHA, meta.PromoBanner, meta.EnterpriseDiscountBps); stampErr == nil {
+		meta.OCIDigest = digest
+		meta.OCITag = "flux-latest"
+	}
 
-		fset := token.NewFileSet()
-		if _, parseErr := parser.ParseFile(fset, pricingPath, srcBytes, parser.AllErrors); parseErr != nil {
-			return buildCacheHit, secretPosture, fmt.Errorf("compile pricing.go: %w", parseErr)
-		}
-
-		srcText := string(srcBytes)
-		if strings.Contains(srcText, "subtotalCents - discountCents - 1") ||
-			strings.Contains(srcText, "subtotalCents-discountCents-1") {
-			return buildCacheHit, secretPosture, fmt.Errorf(
-				"TestCalculateTotal (pricing_test.go:10): CalculateTotal(1000, 100) = 899, want 900 (off-by-one cent in net total calculation)",
+	if regURL := strings.TrimSpace(ociRegistryURL); regURL != "" {
+		if parsedReg, parseErr := url.Parse(regURL); parseErr == nil && s.isURLHostAllowed(parsedReg) {
+			pushedDigest, pushedTag, pushErr := PushFulfillmentOCI(
+				ctx,
+				nil,
+				regURL,
+				ociRepo,
+				s.gitBearerToken,
+				meta.ShortSHA,
+				meta.PromoBanner,
+				meta.EnterpriseDiscountBps,
 			)
+			if pushErr != nil {
+				return meta, fmt.Errorf("push OCI artifact to %s: %w", regURL, pushErr)
+			}
+			meta.OCIDigest = pushedDigest
+			meta.OCITag = pushedTag
 		}
 	}
 
 	cachePayload, _ := json.Marshal(map[string]any{
-		"workflow":      workflowKey,
-		"commitSha":     commitSHA,
-		"astDigest":     hex.EncodeToString(h.Sum(nil)),
-		"secretPosture": secretPosture,
-		"updatedAt":     time.Now().UTC().Format(time.RFC3339Nano),
+		"workflow":              workflowKey,
+		"commitSha":             commitSHA,
+		"shortSha":              meta.ShortSHA,
+		"astDigest":             meta.ASTDigest,
+		"ociDigest":             meta.OCIDigest,
+		"ociTag":                meta.OCITag,
+		"promoBanner":           meta.PromoBanner,
+		"enterpriseDiscountBps": meta.EnterpriseDiscountBps,
+		"secretPosture":         secretPosture,
+		"updatedAt":             time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	_ = os.WriteFile(cacheFile, cachePayload, 0o640)
-	return buildCacheHit, secretPosture, nil
+	return meta, nil
 }

@@ -78,6 +78,8 @@ func (d *Dispatcher) handlePoisonOOM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = d.restoreTenantBaselineSource(r.Context(), tenantID)
+
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
 		msg = fmt.Sprintf("Poison pill: Kustomize memory-bomb amplification overlay on %s", tenantID)
@@ -166,6 +168,7 @@ func (d *Dispatcher) handlePoisonRBAC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = ensureNamespace(r.Context(), d.kubeClient, forbiddenNS)
+	_ = d.restoreTenantBaselineSource(r.Context(), tenantID)
 
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
@@ -237,6 +240,8 @@ func (d *Dispatcher) handlePoisonEgress(w http.ResponseWriter, r *http.Request) 
 		httputil.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
 		return
 	}
+
+	_ = d.restoreTenantBaselineSource(r.Context(), tenantID)
 
 	remoteBaseURL := strings.TrimSpace(req.RemoteBaseURL)
 	if remoteBaseURL == "" {
@@ -312,6 +317,8 @@ func (d *Dispatcher) handlePoisonBuggyCode(w http.ResponseWriter, r *http.Reques
 		httputil.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
 		return
 	}
+
+	_ = d.restoreTenantBaselineSource(r.Context(), tenantID)
 
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
@@ -398,7 +405,7 @@ func (d *Dispatcher) handleRecoverTenant(w http.ResponseWriter, r *http.Request)
 	}
 
 	if baselineURL != "" && grKey.Name != "" {
-		_ = d.restoreGitRepositoryURL(r.Context(), grKey, baselineURL)
+		_ = d.restoreTenantBaselineSource(r.Context(), tenantID)
 	}
 
 	var rev gitserver.Revision
@@ -509,7 +516,7 @@ func (d *Dispatcher) handleFleetReset(w http.ResponseWriter, r *http.Request) {
 	for _, tgt := range targets {
 		_ = d.backend.RevertActor(r.Context(), d.atespace, tgt.actorName)
 		if tgt.baselineURL != "" && tgt.grKey.Name != "" {
-			_ = d.restoreGitRepositoryURL(r.Context(), tgt.grKey, tgt.baselineURL)
+			_ = d.restoreTenantBaselineSource(r.Context(), tgt.tenantID)
 		}
 
 		rev, err := d.gitServer.Commit(tgt.tenantID, gitserver.CommitChange{
@@ -807,14 +814,121 @@ func (d *Dispatcher) restoreGitRepositoryURL(ctx context.Context, grKey client.O
 	if err := d.kubeClient.Get(ctx, grKey, &gr); err != nil {
 		return err
 	}
-	if gr.Spec.URL == repoURL && (gr.Annotations == nil || gr.Annotations[CredentialURIAnnotation] == "") {
+	secretName := "git-" + gr.Name
+	if gr.Spec.URL == repoURL &&
+		(gr.Annotations == nil || gr.Annotations[CredentialURIAnnotation] == "") &&
+		gr.Spec.SecretRef != nil && gr.Spec.SecretRef.Name == secretName {
 		return nil
 	}
 	gr.Spec.URL = repoURL
+	gr.Spec.SecretRef = &fluxmeta.LocalObjectReference{Name: secretName}
 	if gr.Annotations != nil {
 		delete(gr.Annotations, CredentialURIAnnotation)
 	}
 	return d.kubeClient.Update(ctx, &gr)
+}
+
+func (d *Dispatcher) restoreTenantBaselineSource(ctx context.Context, tenantID string) error {
+	d.schedMu.Lock()
+	ts, exists := d.tenants[tenantID]
+	var (
+		grKey       client.ObjectKey
+		ksKey       client.ObjectKey
+		baselineURL string
+		curURL      string
+		curPath     string
+	)
+	if exists {
+		grKey = ts.grKey
+		ksKey = ts.ksKey
+		baselineURL = ts.baselineRepoURL
+		curURL = ts.repoURL
+		curPath = ts.path
+	}
+	d.schedMu.Unlock()
+	if !exists || baselineURL == "" {
+		return nil
+	}
+	if curURL == baselineURL && (curPath == "" || curPath == "./") {
+		return nil
+	}
+	if grKey.Name != "" {
+		_ = d.restoreGitRepositoryURL(ctx, grKey, baselineURL)
+	}
+	if ksKey.Name != "" {
+		var ks kustomizev1.Kustomization
+		if err := d.kubeClient.Get(ctx, ksKey, &ks); err == nil && ks.Spec.Path != "./" {
+			ks.Spec.Path = "./"
+			_ = d.kubeClient.Update(ctx, &ks)
+		}
+	}
+	d.schedMu.Lock()
+	if ts, ok := d.tenants[tenantID]; ok {
+		ts.repoURL = baselineURL
+		ts.path = "./"
+	}
+	d.schedMu.Unlock()
+	return nil
+}
+
+func (d *Dispatcher) pointTenantSourceToRepo(
+	ctx context.Context,
+	tenantID string,
+	repoURL string,
+	secretName string,
+	overlayPath string,
+	commitMsg string,
+) error {
+	d.schedMu.Lock()
+	ts, exists := d.tenants[tenantID]
+	var grKey, ksKey client.ObjectKey
+	if exists {
+		grKey = ts.grKey
+		ksKey = ts.ksKey
+	}
+	d.schedMu.Unlock()
+	if !exists {
+		return nil
+	}
+
+	if grKey.Name != "" {
+		var gr sourcev1.GitRepository
+		if err := d.kubeClient.Get(ctx, grKey, &gr); err == nil {
+			changed := false
+			if gr.Spec.URL != repoURL {
+				gr.Spec.URL = repoURL
+				changed = true
+			}
+			if secretName != "" && (gr.Spec.SecretRef == nil || gr.Spec.SecretRef.Name != secretName) {
+				gr.Spec.SecretRef = &fluxmeta.LocalObjectReference{Name: secretName}
+				changed = true
+			}
+			if changed {
+				_ = d.kubeClient.Update(ctx, &gr)
+			}
+		}
+	}
+
+	if ksKey.Name != "" && overlayPath != "" {
+		var ks kustomizev1.Kustomization
+		if err := d.kubeClient.Get(ctx, ksKey, &ks); err == nil && ks.Spec.Path != overlayPath {
+			ks.Spec.Path = overlayPath
+			_ = d.kubeClient.Update(ctx, &ks)
+		}
+	}
+
+	d.schedMu.Lock()
+	if ts, ok := d.tenants[tenantID]; ok {
+		ts.repoURL = repoURL
+		if overlayPath != "" {
+			ts.path = overlayPath
+		}
+		if commitMsg != "" {
+			ts.lastCommitMessage = commitMsg
+		}
+	}
+	d.schedMu.Unlock()
+	return nil
 }
 
 func isValidAteSecretURI(uri string) bool {

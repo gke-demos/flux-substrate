@@ -614,4 +614,15 @@ func TestDispatcherPresenterTokenSessionCSRFAndRateLimit(t *testing.T) {
 	if gotRetry := rateResp.Header.Get("Retry-After"); gotRetry != "60" {
 		t.Errorf("Retry-After header = %q, want 60", gotRetry)
 	}
+
+	// 9. POST /api/webhook/gitea accepts in-cluster Gitea webhook push payloads and triggers turn reconciliation.
+	giteaPayload := `{"after":"b9cdaca979419cfc09ab4cb360d294dae40b4000","ref":"refs/heads/main","commits":[{"id":"b9cdaca","message":"feat: update promo banner"}],"repository":{"name":"fulfillment-api"}}`
+	giteaResp, err := ts.Client().Post(ts.URL+"/api/webhook/gitea?wait=true", "application/json", strings.NewReader(giteaPayload))
+	if err != nil {
+		t.Fatalf("POST /api/webhook/gitea: %v", err)
+	}
+	giteaResp.Body.Close()
+	if giteaResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /api/webhook/gitea status = %d, want 202 Accepted", giteaResp.StatusCode)
+	}
 }

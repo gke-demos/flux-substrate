@@ -239,7 +239,7 @@ func classifyFailureReason(failedStage string, statusCode int) string {
 	switch failedStage {
 	case "fetch":
 		return fluxmeta.ArtifactFailedReason
-	case "render":
+	case "render", "build_test":
 		return fluxmeta.BuildFailedReason
 	case "prune":
 		return fluxmeta.PruneFailedReason

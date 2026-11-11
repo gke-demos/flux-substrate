@@ -78,6 +78,10 @@ if command -v kubectl-ate >/dev/null 2>&1; then
   fi
 fi
 
+echo "==> Building stampable static Linux amd64 fulfillment-api binary template..."
+mkdir -p internal/actor/assets
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o internal/actor/assets/fulfillment-api-linux-amd64 ./cmd/fulfillment-api
+
 echo "==> Building and publishing digest-pinned flux-substrate image via ko (${KO_PLATFORM})..."
 ACTOR_IMAGE="$(KO_DOCKER_REPO="${KO_DOCKER_REPO}" ko build --platform="${KO_PLATFORM}" ./cmd/flux-substrate)"
 echo "==> Built image: ${ACTOR_IMAGE}"

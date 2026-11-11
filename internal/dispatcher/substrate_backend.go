@@ -569,12 +569,23 @@ func (b *SubstrateActorBackend) InvokeReconcile(ctx context.Context, inv TurnInv
 		atespace = b.atespace
 	}
 
-	_, resumeErr := b.controlClient.ResumeActor(ctx, &ateapi.ResumeActorRequest{
-		Actor: &ateapi.ObjectRef{
-			Atespace: atespace,
-			Name:     inv.ActorName,
-		},
-	})
+	var resumeErr error
+	for attempt := 1; attempt <= 8; attempt++ {
+		_, resumeErr = b.controlClient.ResumeActor(ctx, &ateapi.ResumeActorRequest{
+			Actor: &ateapi.ObjectRef{
+				Atespace: atespace,
+				Name:     inv.ActorName,
+			},
+		})
+		if resumeErr == nil || status.Code(resumeErr) == codes.Unimplemented {
+			break
+		}
+		if (status.Code(resumeErr) == codes.Aborted || status.Code(resumeErr) == codes.Unavailable) && attempt < 8 && ctx.Err() == nil {
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+		break
+	}
 	if resumeErr != nil && status.Code(resumeErr) != codes.Unimplemented {
 		if crashErr := b.checkActorCrashed(ctx, atespace, inv.ActorName, resumeErr.Error()); crashErr != nil {
 			return actor.ReconcileResult{
@@ -697,17 +708,28 @@ func (b *SubstrateActorBackend) SuspendActor(ctx context.Context, atespace, acto
 		Atespace: atespace,
 		Name:     actorName,
 	}
-	_, err := b.controlClient.SuspendActor(ctx, &ateapi.SuspendActorRequest{
-		Actor: ref,
-		Options: &ateapi.SuspendOptions{
-			Mode: ateapi.DurabilityMode_DURABILITY_MODE_ASYNCHRONOUS,
-		},
-	})
-	if status.Code(err) == codes.FailedPrecondition {
-		if act, getErr := b.controlClient.GetActor(ctx, &ateapi.GetActorRequest{Actor: ref}); getErr == nil &&
-			act.GetStatus().GetState() == ateapi.ActorState_ACTOR_STATE_SUSPENDED {
+	var err error
+	for attempt := 1; attempt <= 5; attempt++ {
+		_, err = b.controlClient.SuspendActor(ctx, &ateapi.SuspendActorRequest{
+			Actor: ref,
+			Options: &ateapi.SuspendOptions{
+				Mode: ateapi.DurabilityMode_DURABILITY_MODE_ASYNCHRONOUS,
+			},
+		})
+		if err == nil {
 			return nil
 		}
+		if status.Code(err) == codes.FailedPrecondition {
+			if act, getErr := b.controlClient.GetActor(ctx, &ateapi.GetActorRequest{Actor: ref}); getErr == nil &&
+				act.GetStatus().GetState() == ateapi.ActorState_ACTOR_STATE_SUSPENDED {
+				return nil
+			}
+		}
+		if status.Code(err) == codes.Aborted && attempt < 5 && ctx.Err() == nil {
+			time.Sleep(150 * time.Millisecond)
+			continue
+		}
+		break
 	}
 	if err != nil {
 		return fmt.Errorf("SuspendActor %s/%s: %w", atespace, actorName, err)
