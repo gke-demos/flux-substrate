@@ -36,7 +36,7 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("flux-substrate", flag.ContinueOnError)
 
-	mode := fs.String("mode", envOrDefault("FLUX_SUBSTRATE_MODE", "actor"), "Operating mode: actor | git-server")
+	mode := fs.String("mode", envOrDefault("FLUX_SUBSTRATE_MODE", "actor"), "Operating mode: actor | git-server | dispatcher | local")
 	addr := fs.String("addr", envOrDefault("LISTEN_ADDR", ":8080"), "HTTP(S) listen address")
 	tlsCertFile := fs.String("tls-cert-file", os.Getenv("TLS_CERT_FILE"), "Optional TLS certificate PEM path (reloaded per handshake)")
 	tlsKeyFile := fs.String("tls-key-file", os.Getenv("TLS_KEY_FILE"), "Optional TLS private key PEM path (reloaded per handshake)")
@@ -55,12 +55,22 @@ func run(ctx context.Context, args []string) error {
 	seedTenants := fs.String("seed-tenants", os.Getenv("GIT_SEED_TENANTS"), "Comma-separated tenant IDs to seed on startup (e.g. tenant-01,tenant-02)")
 	seedCount := fs.Int("seed-count", 0, "Seed tenant-01..tenant-NN on startup when > 0")
 	tenantTokensDir := fs.String("tenant-tokens-dir", os.Getenv("GIT_TENANT_TOKENS_DIR"), "Optional directory containing per-tenant token files")
+	dispFlags := registerDispatcherFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	var handler http.Handler
+	var (
+		handler http.Handler
+		cleanup func()
+	)
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+
 	switch strings.TrimSpace(*mode) {
 	case "actor":
 		srv, err := actor.NewServer(actor.Config{
@@ -110,8 +120,16 @@ func run(ctx context.Context, args []string) error {
 			slog.String("repos_dir", *reposDir))
 		handler = gs.Handler()
 
+	case "dispatcher", "local":
+		h, closeFn, err := buildDispatcherModeHandler(ctx, strings.TrimSpace(*mode), *addr, *atespace, *kubeconfig, *kubeBridgeURL, dispFlags)
+		if err != nil {
+			return err
+		}
+		handler = h
+		cleanup = closeFn
+
 	default:
-		return fmt.Errorf("unsupported --mode %q (supported modes: actor, git-server)", *mode)
+		return fmt.Errorf("unsupported --mode %q (supported modes: actor, git-server, dispatcher, local)", *mode)
 	}
 
 	return serveHTTP(ctx, *addr, *tlsCertFile, *tlsKeyFile, handler)
