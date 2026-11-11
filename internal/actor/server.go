@@ -75,6 +75,7 @@ type Config struct {
 	RestConfig         *rest.Config
 	MaxRenderBytes     int64
 	AllowedEgressHosts []string
+	ExitOnOOM          bool
 }
 
 // Server serves GET /readyz and POST /reconcile inside a Workflow Actor sandbox.
@@ -93,6 +94,7 @@ type Server struct {
 	baseRestConfig     *rest.Config
 	maxRenderBytes     int64
 	allowedEgressHosts map[string]bool
+	exitOnOOM          bool
 
 	turnSem     chan struct{}
 	turnCounter atomic.Int64
@@ -198,6 +200,7 @@ func NewServer(cfg Config) (*Server, error) {
 		baseRestConfig:     cfg.RestConfig,
 		maxRenderBytes:     maxRenderBytes,
 		allowedEgressHosts: allowedHosts,
+		exitOnOOM:          cfg.ExitOnOOM,
 		turnSem:            make(chan struct{}, 1),
 	}
 
@@ -238,6 +241,15 @@ func (s *Server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 
 	result, statusCode := s.executeTurn(r.Context(), req)
 	httputil.WriteJSON(w, statusCode, result)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	if statusCode == http.StatusInsufficientStorage && s.exitOnOOM {
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			os.Exit(137)
+		}()
+	}
 }
 
 func (s *Server) executeTurn(ctx context.Context, req ReconcileRequest) (ReconcileResult, int) {

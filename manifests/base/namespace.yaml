@@ -5,3 +5,4 @@ metadata:
   labels:
     app.kubernetes.io/part-of: flux-substrate
     reconciler.ate.dev/managed-by: flux-substrate
+    ate.dev/api-access: "true"

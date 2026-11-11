@@ -83,13 +83,33 @@ spec:
           image: ko://github.com/gke-demos/flux-substrate/cmd/flux-substrate
           args:
             - --mode=oidc-bridge
-            - --addr=:8443
+            - --addr=:8080
             - --atespace=flux-substrate
-            - --issuer-url=https://ate-idp-server.ate-system.svc:8443
-            - --audience=https://kube-bridge.flux-substrate.svc
+            - --oidc-issuer-url=https://idp.ate-system.svc
+            - --oidc-audience=http://kube-bridge.flux-substrate.svc.cluster.local
+            - --oidc-ca-file=/run/servicedns-ca/trust-bundle.pem
           ports:
-            - name: https
-              containerPort: 8443
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          volumeMounts:
+            - name: servicedns-ca
+              mountPath: /run/servicedns-ca
+              readOnly: true
+      volumes:
+        - name: servicedns-ca
+          projected:
+            defaultMode: 0444
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
 ---
 apiVersion: v1
 kind: Service
@@ -103,6 +123,6 @@ spec:
   selector:
     app.kubernetes.io/name: kube-bridge
   ports:
-    - name: https
-      port: 443
-      targetPort: https
+    - name: http
+      port: 80
+      targetPort: http

@@ -161,6 +161,11 @@ func (s *Server) SetTenantToken(tenantID, token string) {
 	s.tenantTokens[tenantID] = token
 }
 
+// TokenForTenant returns the expected HTTP bearer token configured for tenantID.
+func (s *Server) TokenForTenant(tenantID string) string {
+	return s.expectedTokenFor(tenantID)
+}
+
 // Telemetry returns Smart HTTP upload-pack transfer stats for tenantID.
 func (s *Server) Telemetry(tenantID string) RepoTelemetry {
 	st := s.repoStat(tenantID)

@@ -38,7 +38,7 @@ func TestPortableBaseManifestsBuildWithKustomize(t *testing.T) {
 		"name: kustomizations.kustomize.toolkit.fluxcd.io",
 		"kind: WorkerPool",
 		"name: flux-reconciler-pool",
-		"pool.ate.dev/role: flux-reconciler",
+		"flux-substrate.io/role: flux-reconciler",
 		"ko://github.com/gke-demos/flux-substrate/cmd/flux-substrate",
 		"--mode=git-server",
 		"--mode=oidc-bridge",
@@ -54,6 +54,7 @@ func TestPortableBaseManifestsBuildWithKustomize(t *testing.T) {
 	forbiddenIdentifiers := []string{
 		"mofilabs",
 		"ate-cluster",
+		"substrate-workflows",
 		"gke_mofilabs",
 		"fluid compute",
 		"Vertex AI",

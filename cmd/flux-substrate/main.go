@@ -90,6 +90,7 @@ func run(ctx context.Context, args []string) error {
 			KubeBridgeURL:   *kubeBridgeURL,
 			KubeBearerToken: os.Getenv("KUBE_BEARER_TOKEN"),
 			KubeconfigPath:  *kubeconfig,
+			ExitOnOOM:       os.Getenv("FLUX_SUBSTRATE_EXIT_ON_OOM") != "false",
 		})
 		if err != nil {
 			return fmt.Errorf("initialize Workflow Actor: %w", err)

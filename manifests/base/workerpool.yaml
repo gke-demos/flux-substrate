@@ -1,15 +1,23 @@
-apiVersion: k8s.ate.dev/v1alpha1
+apiVersion: ate.dev/v1
 kind: WorkerPool
 metadata:
   name: flux-reconciler-pool
-  namespace: ate-system
+  namespace: flux-substrate
   labels:
     app.kubernetes.io/part-of: flux-substrate
-    pool.ate.dev/role: flux-reconciler
+    flux-substrate.io/role: flux-reconciler
 spec:
   replicas: 3
-  workerLabels:
-    pool.ate.dev/role: flux-reconciler
-  capacity:
-    cpuMillicores: 1500
-    memoryBytes: 1610612736
+  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0
+  sandboxClasses:
+    - name: gvisor
+  template:
+    labels:
+      flux-substrate.io/role: flux-reconciler
+    resources:
+      limits:
+        cpu: "1500m"
+        memory: 1536Mi
+      requests:
+        cpu: 250m
+        memory: 1024Mi

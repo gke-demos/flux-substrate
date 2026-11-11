@@ -11,6 +11,7 @@ import (
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -76,6 +77,16 @@ func SeedFleet(ctx context.Context, opts SeedFleetOptions) error {
 
 		if _, err := opts.GitServer.SeedDefaultTenant(tenantID, tenantID); err != nil {
 			return fmt.Errorf("seed Git repo for %s: %w", tenantID, err)
+		}
+
+		if tok := strings.TrimSpace(opts.GitServer.TokenForTenant(tenantID)); tok != "" {
+			if err := upsertGitTokenSecret(ctx, opts.KubeClient, ctrlNS, "git-"+tenantID, tok); err != nil {
+				return fmt.Errorf("upsert Git token Secret for %s: %w", tenantID, err)
+			}
+		}
+
+		if err := ensureTenantActorRBAC(ctx, opts.KubeClient, ctrlNS, tenantID, tenantID); err != nil {
+			return fmt.Errorf("ensure actor RBAC for %s: %w", tenantID, err)
 		}
 
 		labels := map[string]string{
@@ -167,4 +178,82 @@ func upsertKustomization(ctx context.Context, kc client.Client, desired *kustomi
 	existing.Labels = desired.Labels
 	existing.Spec = desired.Spec
 	return kc.Update(ctx, &existing)
+}
+
+func ensureTenantActorRBAC(ctx context.Context, kc client.Client, atespace, actorName, targetNamespace string) error {
+	if strings.TrimSpace(atespace) == "" {
+		atespace = defaultAtespace
+	}
+	roleName := "flux-reconciler-" + actorName
+	principal := fmt.Sprintf("ate:actor:%s:%s", atespace, actorName)
+	labels := map[string]string{
+		ManagedByLabelKey: ManagedByLabelValue,
+		TenantLabelKey:    actorName,
+	}
+
+	desiredRole := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      roleName,
+			Namespace: targetNamespace,
+			Labels:    labels,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"", "apps", "autoscaling"},
+				Resources: []string{"configmaps", "services", "serviceaccounts", "deployments", "horizontalpodautoscalers"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
+		},
+	}
+
+	var existingRole rbacv1.Role
+	if err := kc.Get(ctx, client.ObjectKeyFromObject(desiredRole), &existingRole); apierrors.IsNotFound(err) {
+		if createErr := kc.Create(ctx, desiredRole); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return createErr
+		}
+	} else if err != nil {
+		return err
+	} else {
+		existingRole.Labels = desiredRole.Labels
+		existingRole.Rules = desiredRole.Rules
+		if err := kc.Update(ctx, &existingRole); err != nil {
+			return err
+		}
+	}
+
+	desiredRB := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      roleName,
+			Namespace: targetNamespace,
+			Labels:    labels,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     roleName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				APIGroup: rbacv1.GroupName,
+				Kind:     rbacv1.UserKind,
+				Name:     principal,
+			},
+		},
+	}
+
+	var existingRB rbacv1.RoleBinding
+	if err := kc.Get(ctx, client.ObjectKeyFromObject(desiredRB), &existingRB); apierrors.IsNotFound(err) {
+		if createErr := kc.Create(ctx, desiredRB); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return createErr
+		}
+	} else if err != nil {
+		return err
+	} else {
+		existingRB.Labels = desiredRB.Labels
+		existingRB.Subjects = desiredRB.Subjects
+		if err := kc.Update(ctx, &existingRB); err != nil {
+			return err
+		}
+	}
+	return nil
 }

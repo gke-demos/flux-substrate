@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -30,12 +31,17 @@ const (
 	// DefaultActorTemplateName is the shared ActorTemplate provisioned for all 24 Tenant Environments.
 	DefaultActorTemplateName = "flux-reconciler-v1"
 	// DefaultWorkerRoleLabelKey is the WorkerPool selector key pinning Flux reconciler actors.
-	DefaultWorkerRoleLabelKey = "pool.ate.dev/role"
+	DefaultWorkerRoleLabelKey = "flux-substrate.io/role"
 	// DefaultWorkerRoleLabelValue is the WorkerPool selector value for Flux reconciler actors.
 	DefaultWorkerRoleLabelValue = "flux-reconciler"
 
-	defaultActorCPUMillicores = 500
-	defaultActorMemoryBytes   = 512 * 1024 * 1024 // 512 MiB
+	defaultActorCPUMillicores = 300
+	defaultActorMemoryBytes   = 256 * 1024 * 1024 // 256 MiB
+
+	defaultRouterTrustBundlePath = "/run/router-client/trust-bundle.pem"
+	defaultRouterCredBundlePath  = "/run/router-client/credential-bundle.pem"
+	defaultAPITokenPath          = "/run/router-client/ate-api-token"
+	roundRobinGRPCServiceConfig  = `{"loadBalancingConfig": [{"round_robin":{}}]}`
 )
 
 // SubstrateBackendConfig configures the Agent Substrate v1.0.0 ControlClient gRPC
@@ -46,11 +52,15 @@ type SubstrateBackendConfig struct {
 	ActorImage        string
 	KubeBridgeURL     string
 	ControlAddr       string
+	ControlServerName string
+	ControlTokenFile  string
 	ControlClient     ateapi.ControlClient
 	ControlInsecure   bool
 	RouterURL         string
+	RouterServerName  string
 	RouterCAFile      string
 	RouterCAPEM       []byte
+	PodCertBundleFile string
 	PodCertFile       string
 	PodKeyFile        string
 	TurnTimeout       time.Duration
@@ -60,7 +70,7 @@ type SubstrateBackendConfig struct {
 }
 
 // SubstrateActorBackend implements ActorBackend against a live Agent Substrate v1.0.0
-// Control gRPC service (ate-system-server) and atenet-router.
+// Control gRPC service (ate-api-server) and atenet-router.
 type SubstrateActorBackend struct {
 	cfg           SubstrateBackendConfig
 	atespace      string
@@ -106,7 +116,24 @@ func NewSubstrateActorBackend(cfg SubstrateBackendConfig) (*SubstrateActorBacken
 		cfg.MemoryBytes = defaultActorMemoryBytes
 	}
 
-	tlsCfg, err := buildDynamicMTLSConfig(cfg.RouterCAPEM, cfg.RouterCAFile, cfg.PodCertFile, cfg.PodKeyFile)
+	if strings.TrimSpace(cfg.RouterCAFile) == "" && len(cfg.RouterCAPEM) == 0 && fileExists(defaultRouterTrustBundlePath) {
+		cfg.RouterCAFile = defaultRouterTrustBundlePath
+	}
+	if strings.TrimSpace(cfg.PodCertBundleFile) == "" && strings.TrimSpace(cfg.PodCertFile) == "" && fileExists(defaultRouterCredBundlePath) {
+		cfg.PodCertBundleFile = defaultRouterCredBundlePath
+	}
+	if strings.TrimSpace(cfg.ControlTokenFile) == "" && !cfg.ControlInsecure && fileExists(defaultAPITokenPath) {
+		cfg.ControlTokenFile = defaultAPITokenPath
+	}
+
+	routerTLS, err := buildDynamicMTLSConfig(
+		cfg.RouterCAPEM,
+		cfg.RouterCAFile,
+		cfg.PodCertBundleFile,
+		cfg.PodCertFile,
+		cfg.PodKeyFile,
+		resolveRouterServerName(routerURL, cfg.RouterServerName),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -114,13 +141,30 @@ func NewSubstrateActorBackend(cfg SubstrateBackendConfig) (*SubstrateActorBacken
 	var grpcConn *grpc.ClientConn
 	controlClient := cfg.ControlClient
 	if controlClient == nil {
-		var dialOpt grpc.DialOption
+		var dialOpts []grpc.DialOption
 		if cfg.ControlInsecure {
-			dialOpt = grpc.WithTransportCredentials(insecure.NewCredentials())
+			dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		} else {
-			dialOpt = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg.Clone()))
+			controlTLS, tlsErr := buildDynamicMTLSConfig(
+				cfg.RouterCAPEM,
+				cfg.RouterCAFile,
+				"",
+				"",
+				"",
+				resolveControlServerName(cfg.ControlAddr, cfg.ControlServerName),
+			)
+			if tlsErr != nil {
+				return nil, tlsErr
+			}
+			dialOpts = append(dialOpts,
+				grpc.WithTransportCredentials(credentials.NewTLS(controlTLS)),
+				grpc.WithDefaultServiceConfig(roundRobinGRPCServiceConfig),
+			)
+			if tokFile := strings.TrimSpace(cfg.ControlTokenFile); tokFile != "" {
+				dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(fileBearerTokenCreds(tokFile)))
+			}
 		}
-		conn, err := grpc.NewClient(strings.TrimSpace(cfg.ControlAddr), dialOpt)
+		conn, err := grpc.NewClient(strings.TrimSpace(cfg.ControlAddr), dialOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("dial Agent Substrate Control gRPC %s: %w", cfg.ControlAddr, err)
 		}
@@ -133,6 +177,7 @@ func NewSubstrateActorBackend(cfg SubstrateBackendConfig) (*SubstrateActorBacken
 		timeout = 90 * time.Second
 	}
 
+	isHTTPSRouter := strings.HasPrefix(strings.ToLower(routerURL), "https://")
 	return &SubstrateActorBackend{
 		cfg:           cfg,
 		atespace:      atespace,
@@ -145,7 +190,11 @@ func NewSubstrateActorBackend(cfg SubstrateBackendConfig) (*SubstrateActorBacken
 		httpClient: &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
-				TLSClientConfig: tlsCfg,
+				TLSClientConfig:     routerTLS,
+				ForceAttemptHTTP2:   isHTTPSRouter,
+				MaxIdleConns:        64,
+				MaxIdleConnsPerHost: 16,
+				IdleConnTimeout:     30 * time.Second,
 			},
 		},
 		templateEnsured: make(map[string]bool),
@@ -184,7 +233,7 @@ func (b *SubstrateActorBackend) EnsureTemplate(ctx context.Context, atespace str
 			},
 		})
 	}
-	if err != nil && status.Code(err) != codes.AlreadyExists {
+	if err != nil && status.Code(err) != codes.AlreadyExists && status.Code(err) != codes.PermissionDenied {
 		return fmt.Errorf("ensure Atespace %s: %w", atespace, err)
 	}
 
@@ -220,7 +269,7 @@ func (b *SubstrateActorBackend) buildDesiredActorTemplate(atespace string) *atea
 
 	args := []string{
 		"--mode=actor",
-		"--addr=:8080",
+		"--addr=:80",
 		"--durable-dir=/var/lib/flux",
 	}
 	if b.kubeBridgeURL != "" {
@@ -259,16 +308,16 @@ func (b *SubstrateActorBackend) buildDesiredActorTemplate(atespace string) *atea
 						{
 							ActorMetadata: &ateapi.ActorMetadataDataSource{
 								Items: []*ateapi.ActorMetadataItem{
-									{Field: ateapi.ActorMetadataField_ACTOR_METADATA_FIELD_NAME, Path: "name"},
+									{Field: ateapi.ActorMetadataField_ACTOR_METADATA_FIELD_NAME, Path: "actor-name"},
 									{Field: ateapi.ActorMetadataField_ACTOR_METADATA_FIELD_ATESPACE, Path: "atespace"},
-									{Field: ateapi.ActorMetadataField_ACTOR_METADATA_FIELD_UID, Path: "uid"},
+									{Field: ateapi.ActorMetadataField_ACTOR_METADATA_FIELD_UID, Path: "actor-uid"},
 								},
 							},
 						},
 						{
 							TrustBundle: &ateapi.TrustBundleDataSource{
 								Names: []string{"egress-mitm.ate.dev", "system-roots.ate.dev"},
-								Path:  "ca-bundle.pem",
+								Path:  "trust-bundle.pem",
 							},
 						},
 					},
@@ -281,19 +330,19 @@ func (b *SubstrateActorBackend) buildDesiredActorTemplate(atespace string) *atea
 				Image: b.actorImage,
 				Args:  args,
 				Env: []*ateapi.EnvVar{
-					{Name: "SSL_CERT_FILE", Value: "/var/run/ate/system-info/ca-bundle.pem"},
-					{Name: "GIT_SSL_CAINFO", Value: "/var/run/ate/system-info/ca-bundle.pem"},
+					{Name: "SSL_CERT_FILE", Value: "/run/ate/trust-bundle.pem"},
+					{Name: "GIT_SSL_CAINFO", Value: "/run/ate/trust-bundle.pem"},
 				},
 				WakeupProbe: &ateapi.WakeupProbe{
 					HttpGet: &ateapi.HttpGetAction{
 						Path: "/readyz",
-						Port: 8080,
+						Port: 80,
 					},
 					TimeoutSeconds: 30,
 				},
 				VolumeMounts: []*ateapi.VolumeMount{
 					{Name: "flux-cache", MountPath: "/var/lib/flux"},
-					{Name: "ate-system-info", MountPath: "/var/run/ate/system-info"},
+					{Name: "ate-system-info", MountPath: "/run/ate"},
 				},
 			},
 		},
@@ -341,7 +390,7 @@ func (b *SubstrateActorBackend) EnsureActor(ctx context.Context, spec ActorSpec)
 }
 
 // EnsureEgressPolicy creates or updates the singleton "default" ActorEgressPolicy for a Workflow Actor,
-// configuring replaceHeaders with actorJwt for the Identity Bridge and ate-secret:// for Git HTTPS.
+// configuring replaceHeaders with actorJwt for the Identity Bridge and ate-secret:// for Git HTTP(S).
 func (b *SubstrateActorBackend) EnsureEgressPolicy(ctx context.Context, policy EgressPolicySpec) error {
 	atespace := strings.TrimSpace(policy.Atespace)
 	if atespace == "" {
@@ -400,7 +449,11 @@ func (b *SubstrateActorBackend) EnsureEgressPolicy(ctx context.Context, policy E
 func buildAteEgressRules(policy EgressPolicySpec) []*ateapi.EgressRule {
 	var rules []*ateapi.EgressRule
 
-	gitHost, gitPort := splitHostAndDefaultPort(policy.GitHost, policy.GitScheme)
+	gitScheme := strings.ToLower(strings.TrimSpace(policy.GitScheme))
+	if gitScheme == "" {
+		gitScheme = "https"
+	}
+	gitHost, _ := splitHostAndDefaultPort(policy.GitHost, gitScheme)
 	if gitHost != "" {
 		var gitEffects *ateapi.HttpRuleEffects
 		if credURI := strings.TrimSpace(policy.GitCredentialURI); credURI != "" {
@@ -414,12 +467,11 @@ func buildAteEgressRules(policy EgressPolicySpec) []*ateapi.EgressRule {
 				},
 			}
 		}
-		ports := &ateapi.Ports{Numbers: []int32{gitPort}}
-		if strings.EqualFold(policy.GitScheme, "http") {
+		if gitScheme == "http" {
 			rules = append(rules, &ateapi.EgressRule{
 				Http: &ateapi.HttpRule{
 					Hostnames: []string{gitHost},
-					Ports:     ports,
+					Ports:     &ateapi.Ports{Numbers: []int32{80}},
 					Effects:   gitEffects,
 				},
 			})
@@ -427,18 +479,22 @@ func buildAteEgressRules(policy EgressPolicySpec) []*ateapi.EgressRule {
 			rules = append(rules, &ateapi.EgressRule{
 				Https: &ateapi.HttpsRule{
 					Hostnames: []string{gitHost},
-					Ports:     ports,
+					Ports:     &ateapi.Ports{Numbers: []int32{443}},
 					Effects:   gitEffects,
 				},
 			})
 		}
 	}
 
-	bridgeHost, bridgePort := splitHostAndDefaultPort(policy.KubeBridgeHost, "https")
-	if bridgeHost != "" && !(bridgeHost == gitHost && bridgePort == gitPort) {
-		aud := strings.TrimSpace(policy.KubeBridgeAudience)
+	aud := strings.TrimSpace(policy.KubeBridgeAudience)
+	bridgeScheme := "https"
+	if strings.HasPrefix(strings.ToLower(aud), "http://") {
+		bridgeScheme = "http"
+	}
+	bridgeHost, _ := splitHostAndDefaultPort(policy.KubeBridgeHost, bridgeScheme)
+	if bridgeHost != "" && !(bridgeHost == gitHost && bridgeScheme == gitScheme) {
 		if aud == "" {
-			aud = "https://" + bridgeHost
+			aud = bridgeScheme + "://" + bridgeHost
 		}
 		expSecs := policy.ActorJWTLifetimeSecs
 		if expSecs < 300 {
@@ -447,24 +503,35 @@ func buildAteEgressRules(policy EgressPolicySpec) []*ateapi.EgressRule {
 		if expSecs > 3600 {
 			expSecs = 3600
 		}
-		rules = append(rules, &ateapi.EgressRule{
-			Https: &ateapi.HttpsRule{
-				Hostnames: []string{bridgeHost},
-				Ports:     &ateapi.Ports{Numbers: []int32{bridgePort}},
-				Effects: &ateapi.HttpRuleEffects{
-					ReplaceHeaders: []*ateapi.CredentialHeader{
-						{
-							Header: "Authorization",
-							Prefix: "Bearer ",
-							ActorJwt: &ateapi.ActorJwtSource{
-								Audiences:         []string{aud},
-								ExpirationSeconds: expSecs,
-							},
-						},
+		bridgeEffects := &ateapi.HttpRuleEffects{
+			ReplaceHeaders: []*ateapi.CredentialHeader{
+				{
+					Header: "Authorization",
+					Prefix: "Bearer ",
+					ActorJwt: &ateapi.ActorJwtSource{
+						Audiences:         []string{aud},
+						ExpirationSeconds: expSecs,
 					},
 				},
 			},
-		})
+		}
+		if bridgeScheme == "http" {
+			rules = append(rules, &ateapi.EgressRule{
+				Http: &ateapi.HttpRule{
+					Hostnames: []string{bridgeHost},
+					Ports:     &ateapi.Ports{Numbers: []int32{80}},
+					Effects:   bridgeEffects,
+				},
+			})
+		} else {
+			rules = append(rules, &ateapi.EgressRule{
+				Https: &ateapi.HttpsRule{
+					Hostnames: []string{bridgeHost},
+					Ports:     &ateapi.Ports{Numbers: []int32{443}},
+					Effects:   bridgeEffects,
+				},
+			})
+		}
 	}
 
 	return rules
@@ -488,75 +555,112 @@ func splitHostAndDefaultPort(rawHost, scheme string) (string, int32) {
 	return strings.ToLower(rawHost), defaultPort
 }
 
-// InvokeReconcile sends POST /reconcile through atenet-router with ate-target-actor: <atespace>/<actor>
-// and converts HTTP 507 or ACTOR_STATE_CRASHED into an *ActorCrashError.
+// InvokeReconcile wakes a SUSPENDED actor via ResumeActor, sends POST /reconcile through
+// atenet-router with ate-target-actor: <atespace>/<actor>, and converts HTTP 507 or
+// ACTOR_STATE_CRASHED into an *ActorCrashError.
 func (b *SubstrateActorBackend) InvokeReconcile(ctx context.Context, inv TurnInvocation) (actor.ReconcileResult, int, error) {
 	atespace := strings.TrimSpace(inv.Atespace)
 	if atespace == "" {
 		atespace = b.atespace
 	}
 
-	body, err := json.Marshal(inv.Request)
-	if err != nil {
-		return actor.ReconcileResult{}, http.StatusInternalServerError, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.routerURL+"/reconcile", bytes.NewReader(body))
-	if err != nil {
-		return actor.ReconcileResult{}, http.StatusInternalServerError, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("ate-target-actor", fmt.Sprintf("%s/%s", atespace, inv.ActorName))
-
-	resp, err := b.httpClient.Do(req)
-	if err != nil {
-		if crashErr := b.checkActorCrashed(ctx, atespace, inv.ActorName, err.Error()); crashErr != nil {
+	_, resumeErr := b.controlClient.ResumeActor(ctx, &ateapi.ResumeActorRequest{
+		Actor: &ateapi.ObjectRef{
+			Atespace: atespace,
+			Name:     inv.ActorName,
+		},
+	})
+	if resumeErr != nil && status.Code(resumeErr) != codes.Unimplemented {
+		if crashErr := b.checkActorCrashed(ctx, atespace, inv.ActorName, resumeErr.Error()); crashErr != nil {
 			return actor.ReconcileResult{
 				TenantID:    inv.Request.TenantID,
 				FailedStage: "render",
 				Error:       crashErr.Error(),
 			}, http.StatusInsufficientStorage, crashErr
 		}
-		return actor.ReconcileResult{}, http.StatusBadGateway, err
-	}
-	defer resp.Body.Close()
-
-	var result actor.ReconcileResult
-	decodeErr := json.NewDecoder(resp.Body).Decode(&result)
-
-	if resp.StatusCode == http.StatusInsufficientStorage {
-		reason := result.Error
-		if reason == "" {
-			reason = "sandbox memory limit exceeded (HTTP 507)"
-		}
-		crashErr := &ActorCrashError{
-			ActorName: inv.ActorName,
-			Reason:    reason,
-		}
-		if result.FailedStage == "" {
-			result.FailedStage = "render"
-		}
-		if result.Error == "" {
-			result.Error = crashErr.Error()
-		}
-		return result, resp.StatusCode, crashErr
+		return actor.ReconcileResult{}, http.StatusBadGateway, fmt.Errorf("ResumeActor %s/%s: %w", atespace, inv.ActorName, resumeErr)
 	}
 
-	if resp.StatusCode >= http.StatusInternalServerError {
-		if crashErr := b.checkActorCrashed(ctx, atespace, inv.ActorName, result.Error); crashErr != nil {
+	body, err := json.Marshal(inv.Request)
+	if err != nil {
+		return actor.ReconcileResult{}, http.StatusInternalServerError, err
+	}
+
+	const maxRouteAttempts = 15
+	for attempt := 1; attempt <= maxRouteAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.routerURL+"/reconcile", bytes.NewReader(body))
+		if err != nil {
+			return actor.ReconcileResult{}, http.StatusInternalServerError, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("ate-target-actor", fmt.Sprintf("%s/%s", atespace, inv.ActorName))
+
+		resp, err := b.httpClient.Do(req)
+		if err != nil {
+			if crashErr := b.checkActorCrashed(ctx, atespace, inv.ActorName, err.Error()); crashErr != nil {
+				return actor.ReconcileResult{
+					TenantID:    inv.Request.TenantID,
+					FailedStage: "render",
+					Error:       crashErr.Error(),
+				}, http.StatusInsufficientStorage, crashErr
+			}
+			if attempt < maxRouteAttempts && ctx.Err() == nil {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			return actor.ReconcileResult{}, http.StatusBadGateway, err
+		}
+
+		var result actor.ReconcileResult
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode == http.StatusInsufficientStorage {
+			reason := result.Error
+			if reason == "" {
+				reason = "sandbox memory limit exceeded (HTTP 507)"
+			}
+			crashErr := &ActorCrashError{
+				ActorName: inv.ActorName,
+				Reason:    reason,
+			}
 			if result.FailedStage == "" {
 				result.FailedStage = "render"
 			}
 			if result.Error == "" {
 				result.Error = crashErr.Error()
 			}
-			return result, http.StatusInsufficientStorage, crashErr
+			return result, resp.StatusCode, crashErr
 		}
+
+		if resp.StatusCode >= http.StatusInternalServerError {
+			if crashErr := b.checkActorCrashed(ctx, atespace, inv.ActorName, result.Error); crashErr != nil {
+				if result.FailedStage == "" {
+					result.FailedStage = "render"
+				}
+				if result.Error == "" {
+					result.Error = crashErr.Error()
+				}
+				return result, http.StatusInsufficientStorage, crashErr
+			}
+			// If atenet-router returned a non-JSON 502/503/504 while Envoy xDS routes propagate
+			// right after ResumeActor, retry briefly.
+			if (resp.StatusCode == http.StatusBadGateway ||
+				resp.StatusCode == http.StatusServiceUnavailable ||
+				resp.StatusCode == http.StatusGatewayTimeout) &&
+				result.FailedStage == "" && attempt < maxRouteAttempts && ctx.Err() == nil {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+		}
+
+		if decodeErr != nil {
+			return actor.ReconcileResult{}, resp.StatusCode, fmt.Errorf("decode router ReconcileResult: %w", decodeErr)
+		}
+		return result, resp.StatusCode, nil
 	}
 
-	if decodeErr != nil {
-		return actor.ReconcileResult{}, resp.StatusCode, fmt.Errorf("decode router ReconcileResult: %w", decodeErr)
-	}
-	return result, resp.StatusCode, nil
+	return actor.ReconcileResult{}, http.StatusBadGateway, errors.New("exhausted atenet-router retry attempts")
 }
 
 func (b *SubstrateActorBackend) checkActorCrashed(ctx context.Context, atespace, actorName, fallbackReason string) *ActorCrashError {
@@ -584,15 +688,22 @@ func (b *SubstrateActorBackend) SuspendActor(ctx context.Context, atespace, acto
 	if strings.TrimSpace(atespace) == "" {
 		atespace = b.atespace
 	}
+	ref := &ateapi.ObjectRef{
+		Atespace: atespace,
+		Name:     actorName,
+	}
 	_, err := b.controlClient.SuspendActor(ctx, &ateapi.SuspendActorRequest{
-		Actor: &ateapi.ObjectRef{
-			Atespace: atespace,
-			Name:     actorName,
-		},
+		Actor: ref,
 		Options: &ateapi.SuspendOptions{
 			Mode: ateapi.DurabilityMode_DURABILITY_MODE_ASYNCHRONOUS,
 		},
 	})
+	if status.Code(err) == codes.FailedPrecondition {
+		if act, getErr := b.controlClient.GetActor(ctx, &ateapi.GetActorRequest{Actor: ref}); getErr == nil &&
+			act.GetStatus().GetState() == ateapi.ActorState_ACTOR_STATE_SUSPENDED {
+			return nil
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("SuspendActor %s/%s: %w", atespace, actorName, err)
 	}
@@ -604,19 +715,79 @@ func (b *SubstrateActorBackend) RevertActor(ctx context.Context, atespace, actor
 	if strings.TrimSpace(atespace) == "" {
 		atespace = b.atespace
 	}
-	_, err := b.controlClient.RevertActor(ctx, &ateapi.RevertActorRequest{
-		Actor: &ateapi.ObjectRef{
-			Atespace: atespace,
-			Name:     actorName,
-		},
-	})
-	if err != nil {
+	ref := &ateapi.ObjectRef{
+		Atespace: atespace,
+		Name:     actorName,
+	}
+	for attempt := 1; attempt <= 5; attempt++ {
+		_, err := b.controlClient.RevertActor(ctx, &ateapi.RevertActorRequest{
+			Actor: ref,
+		})
+		if err == nil {
+			return nil
+		}
+		if status.Code(err) == codes.FailedPrecondition {
+			if act, getErr := b.controlClient.GetActor(ctx, &ateapi.GetActorRequest{Actor: ref}); getErr == nil &&
+				act.GetStatus().GetState() == ateapi.ActorState_ACTOR_STATE_SUSPENDED {
+				return nil
+			}
+		}
+		if status.Code(err) == codes.Aborted && attempt < 5 && ctx.Err() == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 		return fmt.Errorf("RevertActor %s/%s: %w", atespace, actorName, err)
 	}
 	return nil
 }
 
-func buildDynamicMTLSConfig(caPEM []byte, caFile, certFile, keyFile string) (*tls.Config, error) {
+type fileBearerTokenCreds string
+
+func (c fileBearerTokenCreds) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
+	raw, err := os.ReadFile(string(c))
+	if err != nil {
+		return nil, fmt.Errorf("read ateapi token file %q: %w", string(c), err)
+	}
+	tok := strings.TrimSpace(string(raw))
+	if tok == "" {
+		return nil, fmt.Errorf("ateapi token file %q is empty", string(c))
+	}
+	return map[string]string{"authorization": "Bearer " + tok}, nil
+}
+
+func (c fileBearerTokenCreds) RequireTransportSecurity() bool {
+	return true
+}
+
+func resolveControlServerName(controlAddr, explicit string) string {
+	if s := strings.TrimSpace(explicit); s != "" {
+		return s
+	}
+	addr := strings.TrimSpace(controlAddr)
+	addr = strings.TrimPrefix(addr, "dns:///")
+	addr = strings.TrimPrefix(addr, "dns://")
+	if h, _, err := net.SplitHostPort(addr); err == nil && h != "" {
+		return h
+	}
+	return addr
+}
+
+func resolveRouterServerName(routerURL, explicit string) string {
+	if s := strings.TrimSpace(explicit); s != "" {
+		return s
+	}
+	if u, err := url.Parse(routerURL); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return ""
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func buildDynamicMTLSConfig(caPEM []byte, caFile, bundleFile, certFile, keyFile, serverName string) (*tls.Config, error) {
 	resolvedCA := append([]byte(nil), caPEM...)
 	if len(resolvedCA) == 0 && strings.TrimSpace(caFile) != "" {
 		raw, err := os.ReadFile(strings.TrimSpace(caFile))
@@ -628,6 +799,7 @@ func buildDynamicMTLSConfig(caPEM []byte, caFile, certFile, keyFile string) (*tl
 
 	tlsCfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,
+		ServerName: strings.TrimSpace(serverName),
 	}
 	if len(resolvedCA) > 0 {
 		pool := x509.NewCertPool()
@@ -636,9 +808,24 @@ func buildDynamicMTLSConfig(caPEM []byte, caFile, certFile, keyFile string) (*tl
 		}
 		tlsCfg.RootCAs = pool
 	}
+
+	bFile := strings.TrimSpace(bundleFile)
 	cFile := strings.TrimSpace(certFile)
 	kFile := strings.TrimSpace(keyFile)
-	if cFile != "" && kFile != "" {
+	switch {
+	case bFile != "":
+		tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			raw, err := os.ReadFile(bFile)
+			if err != nil {
+				return nil, err
+			}
+			pair, err := tls.X509KeyPair(raw, raw)
+			if err != nil {
+				return nil, err
+			}
+			return &pair, nil
+		}
+	case cFile != "" && kFile != "":
 		tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			pair, err := tls.LoadX509KeyPair(cFile, kFile)
 			if err != nil {

@@ -17,8 +17,8 @@ rules:
   - apiGroups: ["source.toolkit.fluxcd.io", "kustomize.toolkit.fluxcd.io"]
     resources: ["gitrepositories", "gitrepositories/status", "kustomizations", "kustomizations/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["", "apps", "rbac.authorization.k8s.io"]
-    resources: ["namespaces", "configmaps", "services", "deployments", "roles", "rolebindings"]
+  - apiGroups: ["", "apps", "autoscaling", "rbac.authorization.k8s.io"]
+    resources: ["namespaces", "secrets", "configmaps", "services", "serviceaccounts", "deployments", "horizontalpodautoscalers", "roles", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -54,9 +54,10 @@ spec:
       labels:
         app.kubernetes.io/name: dispatcher
         app.kubernetes.io/part-of: flux-substrate
-        podidentity.podcert.ate.dev/inject: "true"
     spec:
       serviceAccountName: flux-substrate-dispatcher
+      securityContext:
+        fsGroup: 65532
       containers:
         - name: dispatcher
           image: ko://github.com/gke-demos/flux-substrate/cmd/flux-substrate
@@ -64,9 +65,15 @@ spec:
             - --mode=dispatcher
             - --addr=:8080
             - --atespace=flux-substrate
-            - --control-addr=ate-system-server.ate-system.svc:443
-            - --router-url=https://atenet-router.ate-system.svc:8443
-            - --kube-bridge-url=https://kube-bridge.flux-substrate.svc
+            - --watch-namespace=flux-substrate
+            - --data-dir=/var/lib/flux-git
+            - --git-base-url=http://git-server.flux-substrate.svc.cluster.local
+            - --control-addr=dns:///api.ate-system.svc:443
+            - --control-token-file=/run/router-client/ate-api-token
+            - --router-url=https://atenet-router.ate-system.svc:443
+            - --router-ca-file=/run/router-client/trust-bundle.pem
+            - --pod-cert-bundle-file=/run/router-client/credential-bundle.pem
+            - --kube-bridge-url=http://kube-bridge.flux-substrate.svc.cluster.local
           env:
             - name: FLUX_SUBSTRATE_ACTOR_IMAGE
               value: ko://github.com/gke-demos/flux-substrate/cmd/flux-substrate
@@ -77,6 +84,33 @@ spec:
             httpGet:
               path: /readyz
               port: http
+          volumeMounts:
+            - name: router-client
+              mountPath: /run/router-client
+              readOnly: true
+            - name: git-repos
+              mountPath: /var/lib/flux-git
+      volumes:
+        - name: git-repos
+          emptyDir: {}
+        - name: router-client
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: ate-api-token
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
 ---
 apiVersion: v1
 kind: Service

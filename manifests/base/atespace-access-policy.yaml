@@ -1,0 +1,4 @@
+bindings:
+  - role: editor
+    members:
+      - user:system:serviceaccount:flux-substrate:flux-substrate-dispatcher

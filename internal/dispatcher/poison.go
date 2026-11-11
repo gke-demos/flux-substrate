@@ -598,6 +598,10 @@ func (d *Dispatcher) handleRegisterExternalRepo(w http.ResponseWriter, r *http.R
 		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to ensure target namespace"})
 		return
 	}
+	if err := ensureTenantActorRBAC(r.Context(), d.kubeClient, d.atespace, tenantID, targetNS); err != nil {
+		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to ensure target namespace RBAC"})
+		return
+	}
 
 	if tok := strings.TrimSpace(req.Token); tok != "" {
 		if err := upsertGitTokenSecret(r.Context(), d.kubeClient, ctrlNS, secretName, tok); err != nil {

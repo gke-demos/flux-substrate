@@ -27,6 +27,7 @@ type fakeSubstrateControlServer struct {
 	templates     map[string]*ateapi.ActorTemplate
 	actors        map[string]*ateapi.Actor
 	egressByActor map[string]*ateapi.EgressPolicy
+	resumeCalls   []string
 	suspendCalls  []string
 	revertCalls   []string
 	lastSuspendMd ateapi.DurabilityMode
@@ -132,6 +133,18 @@ func (s *fakeSubstrateControlServer) UpdateActorEgressPolicy(_ context.Context, 
 	pol := req.GetEgressPolicy()
 	s.egressByActor[key] = pol
 	return pol, nil
+}
+
+func (s *fakeSubstrateControlServer) ResumeActor(_ context.Context, req *ateapi.ResumeActorRequest) (*ateapi.ResumeActorResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := req.GetActor().GetAtespace() + "/" + req.GetActor().GetName()
+	s.resumeCalls = append(s.resumeCalls, key)
+	act := s.actors[key]
+	if act != nil {
+		act.Status = &ateapi.ActorStatus{State: ateapi.ActorState_ACTOR_STATE_RUNNING}
+	}
+	return &ateapi.ResumeActorResponse{Actor: act}, nil
 }
 
 func (s *fakeSubstrateControlServer) SuspendActor(_ context.Context, req *ateapi.SuspendActorRequest) (*ateapi.SuspendActorResponse, error) {

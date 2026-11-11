@@ -40,6 +40,8 @@ var localResourceCatalog = []resourceDef{
 	{Group: "", Version: "v1", Resource: "secrets", Kind: "Secret", Namespaced: true, HasStatus: false},
 	{Group: "", Version: "v1", Resource: "events", Kind: "Event", Namespaced: true, HasStatus: false},
 	{Group: "apps", Version: "v1", Resource: "deployments", Kind: "Deployment", Namespaced: true, HasStatus: true},
+	{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles", Kind: "Role", Namespaced: true, HasStatus: false},
+	{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings", Kind: "RoleBinding", Namespaced: true, HasStatus: false},
 	{Group: "source.toolkit.fluxcd.io", Version: "v1", Resource: "gitrepositories", Kind: "GitRepository", Namespaced: true, HasStatus: true},
 	{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Resource: "kustomizations", Kind: "Kustomization", Namespaced: true, HasStatus: true},
 }
@@ -146,6 +148,9 @@ func (s *LocalKubeServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case "/apis/apps/v1":
 		writeKubeJSON(w, http.StatusOK, buildAPIResourceList("apps", "v1"))
+		return
+	case "/apis/rbac.authorization.k8s.io/v1":
+		writeKubeJSON(w, http.StatusOK, buildAPIResourceList("rbac.authorization.k8s.io", "v1"))
 		return
 	case "/apis/source.toolkit.fluxcd.io/v1":
 		writeKubeJSON(w, http.StatusOK, buildAPIResourceList("source.toolkit.fluxcd.io", "v1"))
@@ -696,7 +701,7 @@ func storeKey(group, version, resource, ns, name string) string {
 }
 
 func buildAPIGroupList() metav1.APIGroupList {
-	groups := []string{"apps", "source.toolkit.fluxcd.io", "kustomize.toolkit.fluxcd.io"}
+	groups := []string{"apps", "rbac.authorization.k8s.io", "source.toolkit.fluxcd.io", "kustomize.toolkit.fluxcd.io"}
 	out := metav1.APIGroupList{
 		TypeMeta: metav1.TypeMeta{Kind: "APIGroupList", APIVersion: "v1"},
 	}
