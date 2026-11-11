@@ -3,6 +3,11 @@ package actor_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -18,6 +23,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
@@ -27,9 +33,11 @@ import (
 	"github.com/gke-demos/flux-substrate/internal/actor"
 	"github.com/gke-demos/flux-substrate/internal/gitserver"
 	"github.com/gke-demos/flux-substrate/internal/httputil"
+	"github.com/gke-demos/flux-substrate/internal/oidcbridge"
 )
 
 var (
+	sharedTestEnv    *envtest.Environment
 	sharedRestCfg    *rest.Config
 	sharedKubeClient client.Client
 	nsSeq            atomic.Int32
@@ -44,6 +52,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "failed to start envtest control plane: %v\n", err)
 		os.Exit(1)
 	}
+	sharedTestEnv = testEnv
 	sharedRestCfg = cfg
 
 	kc, err := client.New(cfg, client.Options{})
@@ -621,5 +630,385 @@ func TestWorkflowActorSerializesConcurrentReconcileTurns(t *testing.T) {
 
 	if gotMax := maxConcurrentGitOps.Load(); gotMax != 1 {
 		t.Fatalf("max concurrent Git operations from actor = %d, want 1 (serialized turns)", gotMax)
+	}
+}
+
+func TestWorkflowActorReconcilesThroughIdentityBridgeAndEnforcesNamespaceRBAC(t *testing.T) {
+	ctx := context.Background()
+	tenant01 := newTenantNamespace(t, "tenant-rbac-a")
+	tenant02 := newTenantNamespace(t, "tenant-rbac-b")
+
+	// Provision a least-privilege Identity Bridge identity in envtest that can ONLY
+	// impersonate users (zero direct permissions on namespaces or workloads).
+	bridgeUserName := "system:serviceaccount:flux-substrate:kube-oidc-bridge-" + tenant01
+	bridgeUser, err := sharedTestEnv.AddUser(envtest.User{
+		Name:   bridgeUserName,
+		Groups: []string{"system:serviceaccounts", "system:serviceaccounts:flux-substrate", "system:authenticated"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("envtest.AddUser: %v", err)
+	}
+
+	impersonatorRoleName := "oidc-bridge-impersonator-" + tenant01
+	if err := sharedKubeClient.Create(ctx, &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: impersonatorRoleName},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"users"},
+				Verbs:     []string{"impersonate"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("create impersonator ClusterRole: %v", err)
+	}
+	if err := sharedKubeClient.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: impersonatorRoleName},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     impersonatorRoleName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:     rbacv1.UserKind,
+				APIGroup: rbacv1.GroupName,
+				Name:     bridgeUserName,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("create impersonator ClusterRoleBinding: %v", err)
+	}
+
+	// Bind per-namespace RBAC strictly to each tenant's impersonated actor identity.
+	bindTenantActorRBAC(t, ctx, tenant01, "ate:actor:flux-substrate:"+tenant01)
+	bindTenantActorRBAC(t, ctx, tenant02, "ate:actor:flux-substrate:"+tenant02)
+
+	// Start TLS OIDC IdP publishing an ES256 JWK (ate-idp-server wire contract).
+	ecPriv, idpServer, idpCAPEM := startActorTestIDP(t, "idp-key-1")
+
+	// Start TLS Identity Bridge on 127.0.0.1 with audience bound to its own HTTPS URL.
+	var bridgeHandler atomic.Value
+	bridgeTLS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bridgeHandler.Load().(http.Handler).ServeHTTP(w, r)
+	}))
+	t.Cleanup(bridgeTLS.Close)
+
+	bridge, err := oidcbridge.NewServer(oidcbridge.Config{
+		IssuerURL:          idpServer.URL,
+		Audiences:          []string{bridgeTLS.URL},
+		IssuerCAPEM:        idpCAPEM,
+		UpstreamRestConfig: bridgeUser.Config(),
+	})
+	if err != nil {
+		t.Fatalf("oidcbridge.NewServer: %v", err)
+	}
+	bridgeHandler.Store(bridge.Handler())
+
+	bridgeCertPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: bridgeTLS.Certificate().Raw,
+	})
+
+	gs, repoURL, gitCertPEM := newGitFixtureWithEgressInjector(t, tenant01)
+	seeded, err := gs.SeedDefaultTenant(tenant01, tenant01)
+	if err != nil {
+		t.Fatalf("SeedDefaultTenant: %v", err)
+	}
+
+	combinedTrustPEM := slices.Concat(gitCertPEM, bridgeCertPEM)
+
+	sysInfoDir := t.TempDir()
+	mustWriteActorFile(t, filepath.Join(sysInfoDir, "actor-name"), tenant01)
+	mustWriteActorFile(t, filepath.Join(sysInfoDir, "atespace"), "flux-substrate")
+	mustWriteActorFile(t, filepath.Join(sysInfoDir, "actor-uid"), "uid-"+tenant01)
+	if err := os.WriteFile(filepath.Join(sysInfoDir, "trust-bundle.pem"), combinedTrustPEM, 0o600); err != nil {
+		t.Fatalf("write trust-bundle.pem: %v", err)
+	}
+
+	var sawPlaceholder atomic.Int64
+	var subjectPrefix atomic.Value
+	subjectPrefix.Store("actor")
+
+	// Simulate atenet-egress replaceHeaders: verify actor sends only "Bearer actor-placeholder"
+	// and replace it on the wire with a freshly signed actorJwt.
+	egressReplaceHeaders := func(rt http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			r2 := req.Clone(req.Context())
+			if r2.Header.Get("Authorization") == "Bearer actor-placeholder" {
+				sawPlaceholder.Add(1)
+				prefix := subjectPrefix.Load().(string)
+				jwt := mintTestActorJWT(t, ecPriv, "idp-key-1", idpServer.URL, bridgeTLS.URL, prefix+"/flux-substrate/"+tenant01, tenant01)
+				r2.Header.Set("Authorization", "Bearer "+jwt)
+			}
+			return rt.RoundTrip(r2)
+		})
+	}
+
+	durableDir := t.TempDir()
+
+	// Verify explicit non-existent TrustBundleFile fails closed instead of ignoring CA configuration.
+	if _, badErr := actor.NewServer(actor.Config{
+		DurableDir:      durableDir,
+		TrustBundleFile: filepath.Join(t.TempDir(), "missing-bundle.pem"),
+		KubeBridgeURL:   bridgeTLS.URL,
+	}); badErr == nil {
+		t.Fatalf("expected actor.NewServer to fail on unreadable explicit TrustBundleFile")
+	}
+
+	// Turn 1 server discovers projected trust-bundle.pem directly from SystemInfoDir (CAFile).
+	actorSrvFileCA, err := actor.NewServer(actor.Config{
+		DurableDir:        durableDir,
+		SystemInfoDir:     sysInfoDir,
+		KubeBridgeURL:     bridgeTLS.URL,
+		KubeWrapTransport: egressReplaceHeaders,
+	})
+	if err != nil {
+		t.Fatalf("actor.NewServer (SystemInfoDir trust-bundle.pem): %v", err)
+	}
+	actorTSFileCA := httptest.NewServer(actorSrvFileCA.Handler())
+	t.Cleanup(actorTSFileCA.Close)
+
+	// Turn 2/3 server uses in-memory TrustBundlePEM (CAData) against the same warm DurableDir.
+	actorSrv, err := actor.NewServer(actor.Config{
+		DurableDir:        durableDir,
+		SystemInfoDir:     sysInfoDir,
+		TrustBundlePEM:    combinedTrustPEM,
+		KubeBridgeURL:     bridgeTLS.URL,
+		KubeWrapTransport: egressReplaceHeaders,
+	})
+	if err != nil {
+		t.Fatalf("actor.NewServer: %v", err)
+	}
+	actorTS := httptest.NewServer(actorSrv.Handler())
+	t.Cleanup(actorTS.Close)
+
+	postReconcileTo := func(ts *httptest.Server) (int, actor.ReconcileResult) {
+		t.Helper()
+		body, _ := json.Marshal(actor.ReconcileRequest{
+			TenantID:        tenant01,
+			RepoURL:         repoURL,
+			Branch:          "main",
+			Path:            "./",
+			TargetNamespace: tenant01,
+		})
+		resp, reqErr := ts.Client().Post(ts.URL+"/reconcile", "application/json", bytes.NewReader(body))
+		if reqErr != nil {
+			t.Fatalf("POST /reconcile: %v", reqErr)
+		}
+		defer resp.Body.Close()
+		var out actor.ReconcileResult
+		if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+			t.Fatalf("decode ReconcileResult: %v", decErr)
+		}
+		return resp.StatusCode, out
+	}
+	postReconcile := func() (int, actor.ReconcileResult) {
+		return postReconcileTo(actorTS)
+	}
+
+	// Turn 1: tenant-01 reconciles its own namespace cleanly via Identity Bridge using SystemInfoDir trust-bundle.pem.
+	status1, turn1 := postReconcileTo(actorTSFileCA)
+	if status1 != http.StatusOK {
+		t.Fatalf("Turn 1 status = %d, want 200 (stage=%q err=%q)", status1, turn1.FailedStage, turn1.Error)
+	}
+	if !turn1.Ready || turn1.CommitSHA != seeded.SHA || len(turn1.Inventory) != 3 {
+		t.Fatalf("Turn 1 unexpected result: %+v", turn1)
+	}
+	if sawPlaceholder.Load() == 0 {
+		t.Fatalf("expected actor client-go transport to send Bearer actor-placeholder header")
+	}
+
+	var cm corev1.ConfigMap
+	if err := sharedKubeClient.Get(ctx, client.ObjectKey{Namespace: tenant01, Name: "app-config"}, &cm); err != nil {
+		t.Fatalf("expected ConfigMap app-config in %s: %v", tenant01, err)
+	}
+
+	// Turn 2 (Cross-Namespace RBAC Poison Pill): commit a manifest targeting tenant-02.
+	if _, err := gs.Commit(tenant01, gitserver.CommitChange{
+		Upsert: map[string]string{
+			"kustomization.yaml": `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - escape.yaml
+`,
+			"escape.yaml": fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cross-tenant-escape
+  namespace: %s
+data:
+  breach: "attempted"
+`, tenant02),
+		},
+		Message: "Poison pill: cross-namespace RBAC escape into " + tenant02,
+	}); err != nil {
+		t.Fatalf("gs.Commit cross-namespace poison pill: %v", err)
+	}
+
+	status2, turn2 := postReconcile()
+	if status2 != http.StatusForbidden {
+		t.Fatalf("Turn 2 cross-namespace status = %d, want 403 Forbidden (stage=%q err=%q)", status2, turn2.FailedStage, turn2.Error)
+	}
+	if !turn2.CacheHit {
+		t.Errorf("Turn 2 CacheHit = false, want true")
+	}
+	if turn2.Ready {
+		t.Errorf("Turn 2 Ready = true, want false on RBAC denial")
+	}
+	if turn2.FailedStage != "apply" {
+		t.Errorf("Turn 2 FailedStage = %q, want %q", turn2.FailedStage, "apply")
+	}
+
+	var escaped corev1.ConfigMap
+	err = sharedKubeClient.Get(ctx, client.ObjectKey{Namespace: tenant02, Name: "cross-tenant-escape"}, &escaped)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("expected cross-tenant-escape ConfigMap to NOT exist in %s, got err=%v", tenant02, err)
+	}
+
+	// Turn 3: verify worker-for-actor token is rejected with 403 Forbidden end-to-end.
+	subjectPrefix.Store("worker-for-actor")
+	status3, turn3 := postReconcile()
+	if status3 != http.StatusForbidden {
+		t.Fatalf("Turn 3 worker-for-actor status = %d, want 403 Forbidden (err=%q)", status3, turn3.Error)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func bindTenantActorRBAC(t *testing.T, ctx context.Context, namespace, actorPrincipal string) {
+	t.Helper()
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tenant-reconciler",
+			Namespace: namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"", "apps"},
+				Resources: []string{"configmaps", "services", "deployments", "replicasets", "pods"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
+		},
+	}
+	if err := sharedKubeClient.Create(ctx, role); err != nil {
+		t.Fatalf("create Role in %s: %v", namespace, err)
+	}
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tenant-reconciler-binding",
+			Namespace: namespace,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     role.Name,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:     rbacv1.UserKind,
+				APIGroup: rbacv1.GroupName,
+				Name:     actorPrincipal,
+			},
+		},
+	}
+	if err := sharedKubeClient.Create(ctx, rb); err != nil {
+		t.Fatalf("create RoleBinding in %s: %v", namespace, err)
+	}
+}
+
+func startActorTestIDP(t *testing.T, kid string) (*ecdsa.PrivateKey, *httptest.Server, []byte) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa.GenerateKey: %v", err)
+	}
+	uncompressed, err := priv.PublicKey.Bytes()
+	if err != nil {
+		t.Fatalf("PublicKey.Bytes: %v", err)
+	}
+
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":   srv.URL,
+			"jwks_uri": srv.URL + "/openid/v1/jwks",
+		})
+	})
+	mux.HandleFunc("GET /openid/v1/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{
+				{
+					"kty": "EC",
+					"kid": kid,
+					"use": "sig",
+					"alg": "ES256",
+					"crv": "P-256",
+					"x":   base64.RawURLEncoding.EncodeToString(uncompressed[1:33]),
+					"y":   base64.RawURLEncoding.EncodeToString(uncompressed[33:65]),
+				},
+			},
+		})
+	})
+
+	srv = httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+	caPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: srv.Certificate().Raw,
+	})
+	return priv, srv, caPEM
+}
+
+func mintTestActorJWT(t *testing.T, priv *ecdsa.PrivateKey, kid, issuer, audience, sub, actorName string) string {
+	t.Helper()
+	now := time.Now()
+	hdrJSON, _ := json.Marshal(map[string]any{
+		"typ": "JWT",
+		"alg": "ES256",
+		"kid": kid,
+	})
+	claims := map[string]any{
+		"iss": issuer,
+		"sub": sub,
+		"aud": []string{audience},
+		"iat": now.Unix(),
+		"nbf": now.Add(-5 * time.Minute).Unix(),
+		"exp": now.Add(10 * time.Minute).Unix(),
+	}
+	if slices.Equal([]byte(sub[:5]), []byte("actor")) {
+		claims["actor.ate.dev"] = map[string]any{
+			"atespace":  "flux-substrate",
+			"actorName": actorName,
+			"actorUID":  "uid-" + actorName,
+		}
+	}
+	payJSON, _ := json.Marshal(claims)
+	signingInput := base64.RawURLEncoding.EncodeToString(hdrJSON) + "." + base64.RawURLEncoding.EncodeToString(payJSON)
+	digest := sha256.Sum256([]byte(signingInput))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatalf("ecdsa.Sign: %v", err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func mustWriteActorFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile %s: %v", path, err)
 	}
 }

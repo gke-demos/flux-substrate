@@ -1,5 +1,5 @@
 // Command flux-substrate is the multi-mode Go entrypoint for Multi-Tenant
-// FluxCD on Agent Substrate (exposing actor and git-server modes).
+// FluxCD on Agent Substrate (exposing actor, git-server, and oidc-bridge modes).
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 	"github.com/gke-demos/flux-substrate/internal/actor"
 	"github.com/gke-demos/flux-substrate/internal/gitserver"
 	"github.com/gke-demos/flux-substrate/internal/httputil"
+	"github.com/gke-demos/flux-substrate/internal/oidcbridge"
 )
 
 func main() {
@@ -36,7 +37,7 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("flux-substrate", flag.ContinueOnError)
 
-	mode := fs.String("mode", envOrDefault("FLUX_SUBSTRATE_MODE", "actor"), "Operating mode: actor | git-server")
+	mode := fs.String("mode", envOrDefault("FLUX_SUBSTRATE_MODE", "actor"), "Operating mode: actor | git-server | oidc-bridge")
 	addr := fs.String("addr", envOrDefault("LISTEN_ADDR", ":8080"), "HTTP(S) listen address")
 	tlsCertFile := fs.String("tls-cert-file", os.Getenv("TLS_CERT_FILE"), "Optional TLS certificate PEM path (reloaded per handshake)")
 	tlsKeyFile := fs.String("tls-key-file", os.Getenv("TLS_KEY_FILE"), "Optional TLS private key PEM path (reloaded per handshake)")
@@ -55,6 +56,12 @@ func run(ctx context.Context, args []string) error {
 	seedTenants := fs.String("seed-tenants", os.Getenv("GIT_SEED_TENANTS"), "Comma-separated tenant IDs to seed on startup (e.g. tenant-01,tenant-02)")
 	seedCount := fs.Int("seed-count", 0, "Seed tenant-01..tenant-NN on startup when > 0")
 	tenantTokensDir := fs.String("tenant-tokens-dir", os.Getenv("GIT_TENANT_TOKENS_DIR"), "Optional directory containing per-tenant token files")
+
+	// Identity Bridge (oidc-bridge) mode flags
+	oidcIssuerURL := fs.String("oidc-issuer-url", os.Getenv("OIDC_ISSUER_URL"), "Trusted OIDC issuer URL (e.g. https://idp.ate-system.svc)")
+	oidcAudience := fs.String("oidc-audience", os.Getenv("OIDC_AUDIENCE"), "Comma-separated expected JWT audiences for Identity Bridge")
+	oidcCAFile := fs.String("oidc-ca-file", os.Getenv("OIDC_CA_FILE"), "Optional CA PEM bundle path for trusting the OIDC issuer")
+	upstreamKubeURL := fs.String("upstream-kube-url", os.Getenv("UPSTREAM_KUBE_URL"), "Optional upstream kube-apiserver URL override")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -110,8 +117,24 @@ func run(ctx context.Context, args []string) error {
 			slog.String("repos_dir", *reposDir))
 		handler = gs.Handler()
 
+	case "oidc-bridge":
+		bridge, err := oidcbridge.NewServer(oidcbridge.Config{
+			IssuerURL:       *oidcIssuerURL,
+			Audiences:       strings.Split(*oidcAudience, ","),
+			IssuerCAFile:    *oidcCAFile,
+			KubeconfigPath:  *kubeconfig,
+			UpstreamKubeURL: *upstreamKubeURL,
+		})
+		if err != nil {
+			return fmt.Errorf("initialize Identity Bridge: %w", err)
+		}
+		slog.Info("starting Identity Bridge HTTP server",
+			slog.String("addr", *addr),
+			slog.String("issuer_url", *oidcIssuerURL))
+		handler = bridge.Handler()
+
 	default:
-		return fmt.Errorf("unsupported --mode %q (supported modes: actor, git-server)", *mode)
+		return fmt.Errorf("unsupported --mode %q (supported modes: actor, git-server, oidc-bridge)", *mode)
 	}
 
 	return serveHTTP(ctx, *addr, *tlsCertFile, *tlsKeyFile, handler)

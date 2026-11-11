@@ -49,32 +49,35 @@ const (
 
 // Config configures a single-tenant Workflow Actor HTTP server.
 type Config struct {
-	ActorName       string
-	Atespace        string
-	ActorUID        string
-	DurableDir      string
-	SystemInfoDir   string
-	TrustBundleFile string
-	TrustBundlePEM  []byte
-	GitBearerToken  string
-	KubeBridgeURL   string
-	KubeBearerToken string
-	KubeconfigPath  string
-	RestConfig      *rest.Config
+	ActorName         string
+	Atespace          string
+	ActorUID          string
+	DurableDir        string
+	SystemInfoDir     string
+	TrustBundleFile   string
+	TrustBundlePEM    []byte
+	GitBearerToken    string
+	KubeBridgeURL     string
+	KubeBearerToken   string
+	KubeWrapTransport func(http.RoundTripper) http.RoundTripper
+	KubeconfigPath    string
+	RestConfig        *rest.Config
 }
 
 // Server serves GET /readyz and POST /reconcile inside a Workflow Actor sandbox.
 type Server struct {
-	actorName       string
-	atespace        string
-	actorUID        string
-	durableDir      string
-	trustBundlePEM  []byte
-	gitBearerToken  string
-	kubeBridgeURL   string
-	kubeBearerToken string
-	kubeconfigPath  string
-	baseRestConfig  *rest.Config
+	actorName         string
+	atespace          string
+	actorUID          string
+	durableDir        string
+	trustBundleFile   string
+	trustBundlePEM    []byte
+	gitBearerToken    string
+	kubeBridgeURL     string
+	kubeBearerToken   string
+	kubeWrapTransport func(http.RoundTripper) http.RoundTripper
+	kubeconfigPath    string
+	baseRestConfig    *rest.Config
 
 	turnSem     chan struct{}
 	turnCounter atomic.Int64
@@ -112,14 +115,31 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("prepare DurableDir %s: %w", durableDir, err)
 	}
 
+	var resolvedTrustFile string
 	trustPEM := slicesClone(cfg.TrustBundlePEM)
 	if len(trustPEM) == 0 {
-		trustPath := strings.TrimSpace(cfg.TrustBundleFile)
-		if trustPath == "" {
-			trustPath = defaultTrustBundleFile
-		}
-		if b, err := os.ReadFile(trustPath); err == nil && len(b) > 0 {
+		explicitTrustPath := strings.TrimSpace(cfg.TrustBundleFile)
+		if explicitTrustPath != "" && explicitTrustPath != defaultTrustBundleFile {
+			b, err := os.ReadFile(explicitTrustPath)
+			if err != nil {
+				return nil, fmt.Errorf("read TrustBundleFile %s: %w", explicitTrustPath, err)
+			}
+			if len(bytes.TrimSpace(b)) == 0 {
+				return nil, fmt.Errorf("TrustBundleFile %s is empty", explicitTrustPath)
+			}
 			trustPEM = b
+			resolvedTrustFile = explicitTrustPath
+		} else {
+			for _, candidate := range []string{
+				filepath.Join(sysDir, "trust-bundle.pem"),
+				defaultTrustBundleFile,
+			} {
+				if b, err := os.ReadFile(candidate); err == nil && len(bytes.TrimSpace(b)) > 0 {
+					trustPEM = b
+					resolvedTrustFile = candidate
+					break
+				}
+			}
 		}
 	}
 
@@ -133,17 +153,19 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		actorName:       actorName,
-		atespace:        atespace,
-		actorUID:        actorUID,
-		durableDir:      durableDir,
-		trustBundlePEM:  trustPEM,
-		gitBearerToken:  gitBearer,
-		kubeBridgeURL:   strings.TrimSpace(cfg.KubeBridgeURL),
-		kubeBearerToken: kubeBearer,
-		kubeconfigPath:  strings.TrimSpace(cfg.KubeconfigPath),
-		baseRestConfig:  cfg.RestConfig,
-		turnSem:         make(chan struct{}, 1),
+		actorName:         actorName,
+		atespace:          atespace,
+		actorUID:          actorUID,
+		durableDir:        durableDir,
+		trustBundleFile:   resolvedTrustFile,
+		trustBundlePEM:    trustPEM,
+		gitBearerToken:    gitBearer,
+		kubeBridgeURL:     strings.TrimSpace(cfg.KubeBridgeURL),
+		kubeBearerToken:   kubeBearer,
+		kubeWrapTransport: cfg.KubeWrapTransport,
+		kubeconfigPath:    strings.TrimSpace(cfg.KubeconfigPath),
+		baseRestConfig:    cfg.RestConfig,
+		turnSem:           make(chan struct{}, 1),
 	}
 
 	mux := http.NewServeMux()
@@ -278,14 +300,14 @@ func (s *Server) executeTurn(ctx context.Context, req ReconcileRequest) (Reconci
 		res.Timings.TotalMs = time.Since(turnStart).Milliseconds()
 		res.Error = fmt.Sprintf("kubernetes client initialization failed: %v", err)
 		res.FailedStage = "apply"
-		return res, http.StatusInternalServerError
+		return res, kubeErrorStatusCode(err, http.StatusInternalServerError)
 	}
 
 	if err := defaultUnsetNamespaces(kubeClient.RESTMapper(), renderedObjs, strings.TrimSpace(req.TargetNamespace)); err != nil {
 		res.Timings.TotalMs = time.Since(turnStart).Milliseconds()
 		res.Error = fmt.Sprintf("resolve target resource scope failed: %v", err)
 		res.FailedStage = "apply"
-		return res, http.StatusBadGateway
+		return res, kubeErrorStatusCode(err, http.StatusBadGateway)
 	}
 
 	poller := polling.NewStatusPoller(kubeClient, kubeClient.RESTMapper(), polling.Options{})
@@ -301,10 +323,7 @@ func (s *Server) executeTurn(ctx context.Context, req ReconcileRequest) (Reconci
 		res.Timings.TotalMs = time.Since(turnStart).Milliseconds()
 		res.Error = fmt.Sprintf("server-side apply failed: %v", err)
 		res.FailedStage = "apply"
-		if apierrors.IsForbidden(err) {
-			return res, http.StatusForbidden
-		}
-		return res, http.StatusBadGateway
+		return res, kubeErrorStatusCode(err, http.StatusBadGateway)
 	}
 
 	actions := make(map[string]string, len(changeSet.Entries))
@@ -328,10 +347,7 @@ func (s *Server) executeTurn(ctx context.Context, req ReconcileRequest) (Reconci
 				res.Timings.TotalMs = time.Since(turnStart).Milliseconds()
 				res.Error = fmt.Sprintf("prune stale objects failed: %v", err)
 				res.FailedStage = "prune"
-				if apierrors.IsForbidden(err) {
-					return res, http.StatusForbidden
-				}
-				return res, http.StatusBadGateway
+				return res, kubeErrorStatusCode(err, http.StatusBadGateway)
 			}
 			for _, entry := range delSet.Entries {
 				if entry.Action == ssa.DeletedAction {
@@ -348,7 +364,7 @@ func (s *Server) executeTurn(ctx context.Context, req ReconcileRequest) (Reconci
 	if err != nil {
 		res.Error = fmt.Sprintf("evaluate resource status failed: %v", err)
 		res.FailedStage = "status"
-		return res, http.StatusBadGateway
+		return res, kubeErrorStatusCode(err, http.StatusBadGateway)
 	}
 
 	if err := savePersistedInventory(inventoryPath, inventory); err != nil {
@@ -663,7 +679,12 @@ func (s *Server) getOrCreateKubeClient() (client.Client, error) {
 			Host:        s.kubeBridgeURL,
 			BearerToken: s.kubeBearerToken,
 		}
-		if len(s.trustBundlePEM) > 0 {
+		switch {
+		case s.trustBundleFile != "":
+			cfg.TLSClientConfig = rest.TLSClientConfig{
+				CAFile: s.trustBundleFile,
+			}
+		case len(s.trustBundlePEM) > 0:
 			cfg.TLSClientConfig = rest.TLSClientConfig{
 				CAData: s.trustBundlePEM,
 			}
@@ -681,6 +702,9 @@ func (s *Server) getOrCreateKubeClient() (client.Client, error) {
 		}
 		cfg = inCluster
 	}
+	if s.kubeWrapTransport != nil {
+		cfg.WrapTransport = s.kubeWrapTransport
+	}
 	cfg.WarningHandlerWithContext = rest.NoWarnings{}
 
 	kc, err := client.New(cfg, client.Options{})
@@ -689,6 +713,16 @@ func (s *Server) getOrCreateKubeClient() (client.Client, error) {
 	}
 	s.kubeClient = kc
 	return kc, nil
+}
+
+func kubeErrorStatusCode(err error, fallback int) int {
+	if apierrors.IsForbidden(err) || (err != nil && strings.Contains(err.Error(), "is forbidden:")) {
+		return http.StatusForbidden
+	}
+	if apierrors.IsUnauthorized(err) {
+		return http.StatusUnauthorized
+	}
+	return fallback
 }
 
 func sanitizeWorkflowKey(workflowName, tenantID string) string {
