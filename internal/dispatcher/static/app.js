@@ -2,27 +2,8 @@
   "use strict";
 
   var selectedTenantId = "tenant-01";
-  var csrfToken = "";
-  var authRequired = false;
-  var authenticated = true;
   var lastState = null;
   var envInspectOverride = "";
-
-  function initSuiteSwitcher() {
-    var proto = window.location.protocol || "http:";
-    var host = window.location.hostname || "localhost";
-    var links = [
-      { id: "suite-link-flux", port: "18080" },
-      { id: "suite-link-argo", port: "18081" },
-      { id: "suite-link-tekton", port: "18090" }
-    ];
-    for (var i = 0; i < links.length; i++) {
-      var el = document.getElementById(links[i].id);
-      if (el) {
-        el.setAttribute("href", proto + "//" + host + ":" + links[i].port);
-      }
-    }
-  }
 
   function initThemeToggle() {
     var root = document.documentElement;
@@ -45,16 +26,6 @@
     lightBtn.addEventListener("click", function () {
       applyTheme("light");
     });
-  }
-
-  function showBanner(msg) {
-    var banner = document.getElementById("status-banner");
-    var text = document.getElementById("status-banner-text");
-    if (!banner || !text) {
-      return;
-    }
-    text.textContent = msg;
-    banner.classList.remove("hidden");
   }
 
   function hideBanner() {
@@ -104,61 +75,29 @@
         return resp.json();
       })
       .then(function (data) {
-        authRequired = Boolean(data.authRequired);
-        authenticated = Boolean(data.authenticated);
-        csrfToken = data.csrfToken || "";
-        updateAuthUI();
+        var pillEl = document.getElementById("sso-session-pill");
+        var signoutEl = document.getElementById("sso-signout-link");
+        var emailEl = document.getElementById("sso-user-email");
+        if (emailEl && data && data.subject) {
+          emailEl.textContent = data.subject + " · Google SSO";
+        }
+        if (pillEl) {
+          pillEl.classList.remove("is-hidden");
+        }
+        if (signoutEl) {
+          signoutEl.classList.remove("is-hidden");
+        }
       })
       .catch(function () {
         // Ignore transient network errors during background poll.
       });
   }
 
-  function updateAuthUI() {
-    var btn = document.getElementById("btn-auth-modal");
-    var lbl = document.getElementById("auth-btn-label");
-    if (!btn || !lbl) {
-      return;
+  function formatExternalRepoUrl(rawUrl) {
+    if (!rawUrl || rawUrl.indexOf(".svc.cluster.local") !== -1 || rawUrl.indexOf("git-server") !== -1) {
+      return "https://gitea.cicd.substrate.learngke.dev/substrate/fulfillment-api.git";
     }
-    if (!authRequired) {
-      btn.classList.add("hidden");
-      return;
-    }
-    btn.classList.remove("hidden");
-    if (authenticated) {
-      lbl.textContent = "Presenter Unlocked";
-      btn.className = "btn btn-ok";
-    } else {
-      lbl.textContent = "Unlock Stage Actions";
-      btn.className = "btn btn-warn";
-    }
-  }
-
-  function apiPost(url, payload) {
-    var headers = { "Content-Type": "application/json" };
-    if (csrfToken) {
-      headers["X-CSRF-Token"] = csrfToken;
-    }
-    return fetch(url, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: headers,
-      body: payload ? JSON.stringify(payload) : "{}"
-    }).then(function (resp) {
-      return resp.json().then(function (data) {
-        if (resp.status === 401 || resp.status === 403) {
-          var authModal = document.getElementById("auth-modal");
-          if (authModal) {
-            authModal.classList.remove("hidden");
-          }
-          throw new Error(data.error || "Presenter authentication required");
-        }
-        if (!resp.ok) {
-          throw new Error(data.error || "Request failed with HTTP " + resp.status);
-        }
-        return data;
-      });
-    });
+    return rawUrl;
   }
 
   function renderFleetState(state) {
@@ -522,7 +461,7 @@
     var shaShort = d.commitSha ? d.commitSha.slice(0, 7) : "HEAD";
     var lines = [
       "$ actor-turn --actor=" + (d.atespace || "flux-substrate") + "/" + d.actorName + " --slot=" + (d.slotId || "W1-1"),
-      "[1/4 git-fetch] repo=" + (d.repoUrl || "http://git-server/git/" + d.tenantId + ".git") + " rev=main@sha1:" + shaShort + " cacheHit=" + Boolean(d.cacheHit),
+      "[1/4 git-fetch] repo=" + formatExternalRepoUrl(d.repoUrl) + " rev=main@sha1:" + shaShort + " cacheHit=" + Boolean(d.cacheHit),
       "[2/4 build-test] go test ./fulfillment-api/... (GOCACHE=/var/lib/flux/build-cache buildCacheHit=" + Boolean(d.buildCacheHit) + ")"
     ];
     if (d.failedStage === "build_test") {
@@ -610,9 +549,9 @@
     if (egressGrid) {
       var eg = d.egressPolicy || {};
       egressGrid.replaceChildren(
-        makeKVItem("Allowed Git Host", (eg.gitScheme || "http") + "://" + (eg.gitHost || "git-server.flux-substrate.svc.cluster.local")),
+        makeKVItem("Git Repository", "https://gitea.cicd.substrate.learngke.dev/substrate/fulfillment-api.git"),
         makeKVItem("Git Credential URI", eg.gitCredentialUri || "ate-secret://k8s.io/default/flux-substrate/git-oci-auth/token"),
-        makeKVItem("Identity Bridge Aud", eg.kubeBridgeAudience || "http://kube-bridge.flux-substrate.svc.cluster.local"),
+        makeKVItem("Identity Bridge Aud", "kube-oidc-bridge (JWKS Verified)"),
         makeKVItem("Impersonated K8s User", "ate:actor:flux-substrate:" + d.actorName)
       );
     }
@@ -647,19 +586,6 @@
       });
   }
 
-  function triggerRevertSelected() {
-    envInspectOverride = "";
-    showBanner("Invoking RevertActor (<1s) snapshot rollback and baseline recovery on " + selectedTenantId + "...");
-    apiPost("/api/tenants/" + encodeURIComponent(selectedTenantId) + "/recover", { wait: true })
-      .then(function () {
-        showBanner(selectedTenantId + " DurableDir rolled back via RevertActor in <1s and reconciled to Ready=True.");
-        pollAll();
-      })
-      .catch(function (err) {
-        showBanner("RevertActor recovery error: " + err.message);
-      });
-  }
-
   function bindActions() {
     var closeBannerBtn = document.getElementById("status-banner-close");
     if (closeBannerBtn) {
@@ -678,121 +604,6 @@
       });
     }
 
-    var waveBtn = document.getElementById("btn-wave");
-    if (waveBtn) {
-      waveBtn.addEventListener("click", function () {
-        envInspectOverride = "";
-        showBanner("Pushing fulfillment-api release and fanning out 24-Actor High-Density Build Wave across W1..W3...");
-        apiPost("/api/wave", { message: "Push fulfillment-api release across 24 Tenant Workflow Actors" })
-          .then(function (res) {
-            showBanner("High-Density Build Wave #" + res.waveId + " enqueued across " + res.tenantCount + " Workflow Actors.");
-            pollAll();
-          })
-          .catch(function (err) {
-            showBanner("Commit Wave error: " + err.message);
-          });
-      });
-    }
-
-    var singleBtn = document.getElementById("btn-single-commit");
-    if (singleBtn) {
-      singleBtn.addEventListener("click", function () {
-        envInspectOverride = "";
-        showBanner("Committing fulfillment-api release promotion to " + selectedTenantId + "...");
-        apiPost("/api/tenants/" + encodeURIComponent(selectedTenantId) + "/commit", {})
-          .then(function (res) {
-            showBanner("Committed revision " + (res.revision ? res.revision.sha.slice(0, 7) : "") + " on " + selectedTenantId + ".");
-            pollAll();
-          })
-          .catch(function (err) {
-            showBanner("Commit error: " + err.message);
-          });
-      });
-    }
-
-    var buggyBtn = document.getElementById("btn-poison-buggy");
-    if (buggyBtn) {
-      buggyBtn.addEventListener("click", function () {
-        envInspectOverride = "";
-        showBanner("Pushing buggy fulfillment-api pricing.go (off-by-one cent discount regression) into " + selectedTenantId + "...");
-        apiPost("/api/tenants/" + encodeURIComponent(selectedTenantId) + "/poison/buggy-code", { wait: true })
-          .then(function (res) {
-            showBanner(
-              selectedTenantId +
-                " Build & Test gate caught pricing.go regression before SSA apply (" +
-                (res.lastError || res.error || "TestCalculateTotal failed") +
-                "). Click RevertActor Recovery (<1s) to roll back."
-            );
-            pollAll();
-          })
-          .catch(function (err) {
-            showBanner("Buggy pricing.go push error: " + err.message);
-          });
-      });
-    }
-
-    var oomBtn = document.getElementById("btn-poison-oom");
-    if (oomBtn) {
-      oomBtn.addEventListener("click", function () {
-        envInspectOverride = "";
-        showBanner("Injecting Sandbox Fault / Memory-Bomb Kustomize OOM into " + selectedTenantId + "...");
-        apiPost("/api/tenants/" + encodeURIComponent(selectedTenantId) + "/poison/oom", { wait: true })
-          .then(function (res) {
-            showBanner(
-              selectedTenantId + " transitioned to " + res.actorState + " (sandbox fault contained; 23 sibling tenants unaffected)."
-            );
-            pollAll();
-          })
-          .catch(function (err) {
-            showBanner("Sandbox fault / OOM error: " + err.message);
-          });
-      });
-    }
-
-    var rbacBtn = document.getElementById("btn-poison-rbac");
-    if (rbacBtn) {
-      rbacBtn.addEventListener("click", function () {
-        envInspectOverride = "";
-        showBanner("Injecting Cross-Namespace RBAC Poison Pill into " + selectedTenantId + "...");
-        apiPost("/api/tenants/" + encodeURIComponent(selectedTenantId) + "/poison/rbac", { wait: true })
-          .then(function (res) {
-            showBanner(
-              "Identity Bridge rejected cross-namespace escape into " + res.forbiddenNamespace + " with 403 Forbidden."
-            );
-            pollAll();
-          })
-          .catch(function (err) {
-            showBanner("RBAC poison pill error: " + err.message);
-          });
-      });
-    }
-
-    var egressBtn = document.getElementById("btn-poison-egress");
-    if (egressBtn) {
-      egressBtn.addEventListener("click", function () {
-        envInspectOverride = "";
-        showBanner("Injecting Unauthorized Remote-Base Egress Poison Pill into " + selectedTenantId + "...");
-        apiPost("/api/tenants/" + encodeURIComponent(selectedTenantId) + "/poison/egress", { wait: true })
-          .then(function () {
-            showBanner("Per-actor EgressPolicy blocked unapproved remote Kustomize base with NXDOMAIN / 403 Forbidden.");
-            pollAll();
-          })
-          .catch(function (err) {
-            showBanner("Egress poison pill error: " + err.message);
-          });
-      });
-    }
-
-    var recoverBtn = document.getElementById("btn-recover");
-    if (recoverBtn) {
-      recoverBtn.addEventListener("click", triggerRevertSelected);
-    }
-
-    var inspRevertBtn = document.getElementById("btn-inspector-revert");
-    if (inspRevertBtn) {
-      inspRevertBtn.addEventListener("click", triggerRevertSelected);
-    }
-
     var inspEnvBtn = document.getElementById("btn-inspector-env");
     if (inspEnvBtn) {
       inspEnvBtn.addEventListener("click", function () {
@@ -808,139 +619,9 @@
         setText("inspector-terminal", envInspectOverride);
       });
     }
-
-    var resetBtn = document.getElementById("btn-reset");
-    if (resetBtn) {
-      resetBtn.addEventListener("click", function () {
-        envInspectOverride = "";
-        showBanner("Resetting all 24 Tenant Environments and rolling back crashed actors...");
-        apiPost("/api/reset", {})
-          .then(function (res) {
-            showBanner("Stage Reset triggered across " + res.tenantCount + " Tenant Environments.");
-            pollAll();
-          })
-          .catch(function (err) {
-            showBanner("Stage Reset error: " + err.message);
-          });
-      });
-    }
-
-    var extModal = document.getElementById("external-modal");
-    var openExtBtn = document.getElementById("btn-external-modal");
-    var closeExtBtn = document.getElementById("btn-close-external-modal");
-    var extForm = document.getElementById("external-repo-form");
-    if (openExtBtn && extModal) {
-      openExtBtn.addEventListener("click", function () {
-        var tidInput = document.getElementById("ext-tenant-id");
-        if (tidInput) {
-          tidInput.value = selectedTenantId;
-        }
-        extModal.classList.remove("hidden");
-      });
-    }
-    if (closeExtBtn && extModal) {
-      closeExtBtn.addEventListener("click", function () {
-        extModal.classList.add("hidden");
-      });
-    }
-    if (extForm && extModal) {
-      extForm.addEventListener("submit", function (ev) {
-        ev.preventDefault();
-        var tid = document.getElementById("ext-tenant-id").value;
-        var repoUrl = document.getElementById("ext-repo-url").value;
-        var branch = document.getElementById("ext-branch").value;
-        var pathVal = document.getElementById("ext-path").value;
-        var credUri = document.getElementById("ext-cred-uri").value;
-
-        apiPost("/api/repos/external", {
-          tenantId: tid,
-          repoUrl: repoUrl,
-          branch: branch,
-          path: pathVal,
-          credentialUri: credUri
-        })
-          .then(function (res) {
-            extModal.classList.add("hidden");
-            selectedTenantId = res.tenantId || tid;
-            showBanner(
-              "Synthesized EgressPolicy for " + res.repoUrl + " on " + selectedTenantId + " and enqueued Reconcile Turn."
-            );
-            pollAll();
-          })
-          .catch(function (err) {
-            showBanner("External repo registration failed: " + err.message);
-          });
-      });
-    }
-
-    var authModal = document.getElementById("auth-modal");
-    var openAuthBtn = document.getElementById("btn-auth-modal");
-    var closeAuthBtn = document.getElementById("btn-close-auth-modal");
-    var authForm = document.getElementById("auth-login-form");
-    var logoutBtn = document.getElementById("btn-auth-logout");
-    if (openAuthBtn && authModal) {
-      openAuthBtn.addEventListener("click", function () {
-        authModal.classList.remove("hidden");
-      });
-    }
-    if (closeAuthBtn && authModal) {
-      closeAuthBtn.addEventListener("click", function () {
-        authModal.classList.add("hidden");
-      });
-    }
-    if (authForm && authModal) {
-      authForm.addEventListener("submit", function (ev) {
-        ev.preventDefault();
-        var tokInput = document.getElementById("auth-token-input");
-        var tokenVal = tokInput ? tokInput.value : "";
-        fetch("/api/auth/login", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: tokenVal })
-        })
-          .then(function (resp) {
-            return resp.json().then(function (data) {
-              if (!resp.ok) {
-                throw new Error(data.error || "Invalid presenter token");
-              }
-              return data;
-            });
-          })
-          .then(function (data) {
-            authenticated = Boolean(data.authenticated);
-            csrfToken = data.csrfToken || "";
-            if (tokInput) {
-              tokInput.value = "";
-            }
-            authModal.classList.add("hidden");
-            updateAuthUI();
-            showBanner("Presenter session unlocked (HttpOnly SameSite=Strict cookie + CSRF token active).");
-          })
-          .catch(function (err) {
-            showBanner("Presenter login failed: " + err.message);
-          });
-      });
-    }
-    if (logoutBtn && authModal) {
-      logoutBtn.addEventListener("click", function () {
-        apiPost("/api/auth/logout", {})
-          .then(function () {
-            authenticated = false;
-            csrfToken = "";
-            authModal.classList.add("hidden");
-            updateAuthUI();
-            showBanner("Presenter session logged out.");
-          })
-          .catch(function (err) {
-            showBanner("Logout error: " + err.message);
-          });
-      });
-    }
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    initSuiteSwitcher();
     initThemeToggle();
     bindActions();
     refreshAuthSession();

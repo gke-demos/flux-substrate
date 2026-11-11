@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand-group">
+    <div class="brand brand-group">
       <span class="brand-icon" aria-hidden="true">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
@@ -18,42 +18,46 @@
       </span>
       <div>
         <h1 class="brand-title">FluxCD on Agent Substrate</h1>
-        <p class="subtitle">fulfillment-api · High-Density gVisor Actor Runner · 3-Pod / 9-Slot WorkerPool (v1.0.0)</p>
-      </div>
-      <div class="suite-switcher" role="navigation" aria-label="Cross-Platform Suite Switcher">
-        <a id="suite-link-flux" href="http://localhost:18080" class="suite-pill active">Flux :18080</a>
-        <a id="suite-link-argo" href="http://localhost:18081" class="suite-pill">Argo :18081</a>
-        <a id="suite-link-tekton" href="http://localhost:18090" class="suite-pill">Tekton :18090</a>
+        <p class="brand-subtitle subtitle">fulfillment-api · 3-Pod / 9-Slot gVisor WorkerPool</p>
       </div>
     </div>
 
-    <nav class="nav-tabs" aria-label="Primary Navigation">
-      <a href="/" class="nav-link">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="3" width="7" height="7"></rect>
-          <rect x="14" y="3" width="7" height="7"></rect>
-          <rect x="14" y="14" width="7" height="7"></rect>
-          <rect x="3" y="14" width="7" height="7"></rect>
-        </svg>
-        <span>Mission Control</span>
-      </a>
-      <a href="/about" class="nav-link active">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="16" x2="12" y2="12"></line>
-          <line x1="12" y1="8" x2="12.01" y2="8"></line>
-        </svg>
-        <span>How It Works</span>
-      </a>
-    </nav>
+    <div class="suite-switcher" role="navigation" aria-label="Cross-Platform Suite Switcher">
+      <a id="suite-link-hub" href="https://cicd.substrate.learngke.dev/" class="suite-pill">Command Hub</a>
+      <a id="suite-link-flux" href="https://flux-actors.cicd.substrate.learngke.dev/" class="suite-pill active">Flux Telemetry</a>
+      <a id="suite-link-argo" href="https://argo-actors.cicd.substrate.learngke.dev/" class="suite-pill">Argo Telemetry</a>
+      <a id="suite-link-tekton" href="https://tekton-actors.cicd.substrate.learngke.dev/" class="suite-pill">Tekton Telemetry</a>
+    </div>
 
     <div class="topbar-right">
-      <span class="status-pill mono">
-        <span class="status-dot" aria-hidden="true"></span>
-        <span>fulfillment-api.git @ main (v1)</span>
+      <nav class="nav-tabs" aria-label="Primary Navigation">
+        <a href="/" class="nav-link">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          <span>Telemetry Console</span>
+        </a>
+        <a href="/about" class="nav-link active">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+          <span>How It Works</span>
+        </a>
+      </nav>
+
+      <span id="sso-session-pill" class="status-pill pill-secret-ok mono" title="Authenticated via Google Workspace SSO (cicd-auth-gateway)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        <span id="sso-user-email">Google SSO Verified</span>
       </span>
-      <span class="status-pill pill-secret-ok mono">ZERO_AMBIENT_SECRETS</span>
-      <span class="status-pill mono">atespace: flux-substrate</span>
+      <a id="sso-signout-link" href="/logout" class="suite-pill" title="Sign out of Google Workspace SSO">Sign out</a>
 
       <div id="theme-toggle" class="theme-toggle" role="group" aria-label="Projector Light Mode Toggle">
         <button id="theme-dark-btn" type="button" class="theme-segment active" aria-label="Dark Mode" title="Dark Mode">
@@ -81,6 +85,12 @@
   <main class="page-shell">
     <section class="action-bar" aria-label="Interactive Signal Flow Simulator Controls">
       <div class="action-group">
+        <span class="status-pill mono">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>fulfillment-api.git @ main (v1)</span>
+        </span>
+        <span class="status-pill pill-secret-ok mono">ZERO_AMBIENT_SECRETS</span>
+        <span class="status-pill mono">atespace: flux-substrate</span>
         <span class="mono">Signal Flow Scenario:</span>
         <button id="flow-btn-0" type="button" class="btn btn-primary">1. Warm Turn &amp; 24:3 Multiplexing</button>
         <button id="flow-btn-1" type="button" class="btn">2. actorJwt -&gt; Identity Bridge RBAC</button>

@@ -3,43 +3,43 @@
 html[data-theme="dark"] {
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
-  --bg-canvas: #0b0f17;
-  --bg-surface: #111827;
-  --bg-elevated: #172033;
-  --bg-hover: #1e293b;
-  --bg-subtle: #151e2e;
-  --bg-code: #070a10;
-  --border: #263248;
-  --border-default: #263248;
-  --border-strong: #3b4d6b;
-  --fg: #f1f5f9;
-  --fg-primary: #f1f5f9;
+  --bg-canvas: #090d16;
+  --bg-surface: #0f1623;
+  --bg-elevated: #161f30;
+  --bg-hover: #1e2a3f;
+  --bg-subtle: #141d2e;
+  --bg-code: #060911;
+  --border: rgba(148, 163, 184, 0.16);
+  --border-default: rgba(148, 163, 184, 0.16);
+  --border-strong: rgba(148, 163, 184, 0.34);
+  --fg: #f8fafc;
+  --fg-primary: #f8fafc;
   --fg-secondary: #cbd5e1;
   --fg-muted: #94a3b8;
   --accent: #38bdf8;
-  --accent-soft: rgba(56, 189, 248, 0.14);
+  --accent-soft: rgba(56, 189, 248, 0.13);
   --accent-primary: #38bdf8;
-  --accent-primary-bg: rgba(56, 189, 248, 0.14);
-  --accent-secondary: #818cf8;
+  --accent-primary-bg: rgba(56, 189, 248, 0.13);
+  --accent-secondary: #2dd4bf;
   --ok: #22c55e;
-  --ok-soft: rgba(34, 197, 94, 0.14);
+  --ok-soft: rgba(34, 197, 94, 0.13);
   --status-ok: #22c55e;
-  --status-ok-bg: rgba(34, 197, 94, 0.14);
+  --status-ok-bg: rgba(34, 197, 94, 0.13);
   --warn: #f59e0b;
-  --warn-soft: rgba(245, 158, 11, 0.15);
+  --warn-soft: rgba(245, 158, 11, 0.14);
   --status-warn: #f59e0b;
-  --status-warn-bg: rgba(245, 158, 11, 0.15);
+  --status-warn-bg: rgba(245, 158, 11, 0.14);
   --danger: #ef4444;
-  --danger-soft: rgba(239, 68, 68, 0.15);
+  --danger-soft: rgba(239, 68, 68, 0.14);
   --status-danger: #ef4444;
-  --status-danger-bg: rgba(239, 68, 68, 0.15);
-  --purple: #a855f7;
-  --purple-soft: rgba(168, 85, 247, 0.15);
-  --status-suspended: #a855f7;
-  --status-suspended-bg: rgba(168, 85, 247, 0.15);
+  --status-danger-bg: rgba(239, 68, 68, 0.14);
+  --purple: #2dd4bf;
+  --purple-soft: rgba(45, 212, 191, 0.13);
+  --status-suspended: #2dd4bf;
+  --status-suspended-bg: rgba(45, 212, 191, 0.13);
   --status-running: #38bdf8;
-  --status-running-bg: rgba(56, 189, 248, 0.14);
-  --shadow-card: 0 4px 14px rgba(0, 0, 0, 0.35);
+  --status-running-bg: rgba(56, 189, 248, 0.13);
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
 :root[data-theme="light"],
@@ -60,29 +60,29 @@ html[data-theme="light"] {
   --fg-secondary: #1e293b;
   --fg-muted: #475569;
   --accent: #0284c7;
-  --accent-soft: rgba(2, 132, 199, 0.12);
+  --accent-soft: rgba(2, 132, 199, 0.11);
   --accent-primary: #0284c7;
-  --accent-primary-bg: rgba(2, 132, 199, 0.12);
-  --accent-secondary: #4f46e5;
+  --accent-primary-bg: rgba(2, 132, 199, 0.11);
+  --accent-secondary: #0f766e;
   --ok: #15803d;
-  --ok-soft: rgba(21, 128, 61, 0.12);
+  --ok-soft: rgba(21, 128, 61, 0.11);
   --status-ok: #15803d;
-  --status-ok-bg: rgba(21, 128, 61, 0.12);
+  --status-ok-bg: rgba(21, 128, 61, 0.11);
   --warn: #b45309;
-  --warn-soft: rgba(180, 83, 9, 0.14);
+  --warn-soft: rgba(180, 83, 9, 0.13);
   --status-warn: #b45309;
-  --status-warn-bg: rgba(180, 83, 9, 0.14);
+  --status-warn-bg: rgba(180, 83, 9, 0.13);
   --danger: #b91c1c;
-  --danger-soft: rgba(185, 28, 28, 0.12);
+  --danger-soft: rgba(185, 28, 28, 0.11);
   --status-danger: #b91c1c;
-  --status-danger-bg: rgba(185, 28, 28, 0.12);
-  --purple: #7e22ce;
-  --purple-soft: rgba(126, 34, 206, 0.12);
-  --status-suspended: #7e22ce;
-  --status-suspended-bg: rgba(126, 34, 206, 0.12);
+  --status-danger-bg: rgba(185, 28, 28, 0.11);
+  --purple: #0f766e;
+  --purple-soft: rgba(15, 118, 110, 0.11);
+  --status-suspended: #0f766e;
+  --status-suspended-bg: rgba(15, 118, 110, 0.11);
   --status-running: #0284c7;
-  --status-running-bg: rgba(2, 132, 199, 0.12);
-  --shadow-card: 0 4px 14px rgba(15, 23, 42, 0.08);
+  --status-running-bg: rgba(2, 132, 199, 0.11);
+  --shadow-card: 0 4px 16px rgba(15, 23, 42, 0.06);
 }
 
 *,
@@ -99,12 +99,14 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 code,
 pre,
 .mono {
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Zone 1 — Unified Sticky Topbar */
@@ -112,21 +114,24 @@ pre,
   position: sticky;
   top: 0;
   z-index: 40;
-  height: 64px;
-  padding: 0 24px;
+  min-height: 60px;
+  padding: 10px 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: nowrap;
   background-color: var(--bg-surface);
   border-bottom: 1px solid var(--border);
 }
 
+.brand,
 .brand-group {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-width: 0;
+  gap: 10px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .brand-icon {
@@ -149,6 +154,7 @@ pre,
   letter-spacing: -0.01em;
   color: var(--fg);
   line-height: 1.25;
+  white-space: nowrap;
 }
 
 .brand-subtitle,
@@ -157,6 +163,7 @@ pre,
   font-size: 0.74rem;
   color: var(--fg-muted);
   line-height: 1.25;
+  white-space: nowrap;
 }
 
 .suite-switcher {
@@ -167,7 +174,8 @@ pre,
   border-radius: 8px;
   background-color: var(--bg-elevated);
   border: 1px solid var(--border);
-  margin-left: 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .suite-pill {
@@ -232,7 +240,9 @@ pre,
 .topbar-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .status-pill,
@@ -254,6 +264,12 @@ pre,
   color: var(--ok);
   border-color: var(--ok);
   background-color: var(--ok-soft);
+}
+
+.status-pill.pill-readonly {
+  color: var(--accent);
+  border-color: var(--accent);
+  background-color: var(--accent-soft);
 }
 
 .status-dot {
@@ -353,6 +369,7 @@ pre,
   color: var(--fg);
   cursor: pointer;
   white-space: nowrap;
+  text-decoration: none;
 }
 
 .btn:hover:not(:disabled) {
@@ -403,8 +420,14 @@ pre,
 }
 
 .status-banner.hidden,
-.hidden {
+.hidden,
+.is-hidden {
   display: none !important;
+}
+
+.mt-8,
+#inspector-inventory {
+  margin-top: 8px;
 }
 
 /* Zone 3 — Unified 4-Card "Wow" Proof Telemetry Strip */

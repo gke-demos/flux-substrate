@@ -258,20 +258,28 @@
   var currentStepIdx = 0;
   var autoPlayTimer = null;
 
-  function initSuiteSwitcher() {
-    var proto = window.location.protocol || "http:";
-    var host = window.location.hostname || "localhost";
-    var links = [
-      { id: "suite-link-flux", port: "18080" },
-      { id: "suite-link-argo", port: "18081" },
-      { id: "suite-link-tekton", port: "18090" }
-    ];
-    for (var i = 0; i < links.length; i++) {
-      var el = document.getElementById(links[i].id);
-      if (el) {
-        el.setAttribute("href", proto + "//" + host + ":" + links[i].port);
-      }
-    }
+  function refreshAuthSession() {
+    fetch("/api/auth/session", { credentials: "same-origin" })
+      .then(function (resp) {
+        return resp.json();
+      })
+      .then(function (data) {
+        var pillEl = document.getElementById("sso-session-pill");
+        var signoutEl = document.getElementById("sso-signout-link");
+        var emailEl = document.getElementById("sso-user-email");
+        if (emailEl && data && data.subject) {
+          emailEl.textContent = data.subject + " · Google SSO";
+        }
+        if (pillEl) {
+          pillEl.classList.remove("is-hidden");
+        }
+        if (signoutEl) {
+          signoutEl.classList.remove("is-hidden");
+        }
+      })
+      .catch(function () {
+        // Ignore transient network errors.
+      });
   }
 
   function initTheme() {
@@ -458,7 +466,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    initSuiteSwitcher();
+    refreshAuthSession();
     initTheme();
     bindControls();
     renderFlowStep();
