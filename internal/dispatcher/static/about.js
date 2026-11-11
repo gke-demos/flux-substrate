@@ -258,6 +258,22 @@
   var currentStepIdx = 0;
   var autoPlayTimer = null;
 
+  function initSuiteSwitcher() {
+    var proto = window.location.protocol || "http:";
+    var host = window.location.hostname || "localhost";
+    var links = [
+      { id: "suite-link-flux", port: "18080" },
+      { id: "suite-link-argo", port: "18081" },
+      { id: "suite-link-tekton", port: "18090" }
+    ];
+    for (var i = 0; i < links.length; i++) {
+      var el = document.getElementById(links[i].id);
+      if (el) {
+        el.setAttribute("href", proto + "//" + host + ":" + links[i].port);
+      }
+    }
+  }
+
   function initTheme() {
     var darkBtn = document.getElementById("theme-dark-btn");
     var lightBtn = document.getElementById("theme-light-btn");
@@ -442,6 +458,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    initSuiteSwitcher();
     initTheme();
     bindControls();
     renderFlowStep();

@@ -11,18 +11,23 @@
     <div class="brand-group">
       <span class="brand-icon" aria-hidden="true">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="12 2 21 7 21 17 12 22 3 17 3 7 12 2"></polygon>
-          <polyline points="3.3 7 12 12 20.7 7"></polyline>
-          <line x1="12" y1="22" x2="12" y2="12"></line>
+          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+          <path d="M2 17l10 5 10-5"></path>
+          <path d="M2 12l10 5 10-5"></path>
         </svg>
       </span>
       <div>
         <h1 class="brand-title">FluxCD on Agent Substrate</h1>
-        <p class="brand-subtitle">fulfillment-api · Turn-Based Workflow Actors · ZERO_AMBIENT_SECRETS · 24:3 WorkerPool Multiplexing</p>
+        <p class="subtitle">fulfillment-api · High-Density gVisor Actor Runner · 3-Pod / 9-Slot WorkerPool (v1.0.0)</p>
+      </div>
+      <div class="suite-switcher" role="navigation" aria-label="Cross-Platform Suite Switcher">
+        <a id="suite-link-flux" href="http://localhost:18080" class="suite-pill active">Flux :18080</a>
+        <a id="suite-link-argo" href="http://localhost:18081" class="suite-pill">Argo :18081</a>
+        <a id="suite-link-tekton" href="http://localhost:18090" class="suite-pill">Tekton :18090</a>
       </div>
     </div>
 
-    <nav class="nav-links" aria-label="Primary Navigation">
+    <nav class="nav-tabs" aria-label="Primary Navigation">
       <a href="/" class="nav-link active">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="3" y="3" width="7" height="7"></rect>
@@ -42,8 +47,14 @@
       </a>
     </nav>
 
-    <div class="topbar-controls">
-      <span id="runtime-mode-pill" class="badge-pill mono">mode: local</span>
+    <div class="topbar-right">
+      <span id="pill-repo-commit" class="status-pill mono">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="pill-repo-commit-text">fulfillment-api.git @ main (v1)</span>
+      </span>
+      <span id="pill-secret-posture" class="status-pill pill-secret-ok mono">ZERO_AMBIENT_SECRETS</span>
+      <span id="runtime-mode-pill" class="status-pill mono">atespace: flux-substrate</span>
+
       <button id="btn-auth-modal" type="button" class="btn hidden" aria-label="Presenter Authentication">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
@@ -76,121 +87,60 @@
   </header>
 
   <main class="page-shell">
-    <div id="status-banner" class="status-banner hidden" role="status" aria-live="polite">
-      <span id="status-banner-text"></span>
-      <button id="status-banner-close" type="button" class="btn">Dismiss</button>
-    </div>
-
-    <section class="kpi-grid" aria-label="Fleet KPI Telemetry">
-      <article class="kpi-card">
-        <div class="kpi-header">
-          <span>Workflow Actors (24 Tenants)</span>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
-            <path d="M2 17l10 5 10-5"></path>
-            <path d="M2 12l10 5 10-5"></path>
-          </svg>
-        </div>
-        <div id="kpi-ready-tenants" class="kpi-value mono">24 / 24 Ready</div>
-        <div class="kpi-subtext mono">
-          <span id="kpi-actors-running">RUNNING: 0</span>
-          <span id="kpi-actors-suspended">SUSPENDED: 24</span>
-          <span id="kpi-actors-crashed">CRASHED: 0</span>
-        </div>
-      </article>
-
-      <article class="kpi-card">
-        <div class="kpi-header">
-          <span>WorkerPool (W1..W3 · 9 Slots)</span>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-            <line x1="6" y1="6" x2="6.01" y2="6"></line>
-            <line x1="6" y1="18" x2="6.01" y2="18"></line>
-          </svg>
-        </div>
-        <div id="kpi-active-slots" class="kpi-value mono">0 / 9 Active Slots</div>
-        <div class="kpi-subtext mono">
-          <span id="kpi-queued-turns">FIFO Queue: 0</span>
-          <span id="kpi-peak-slots">Peak Concurrency: 0 / 9</span>
-        </div>
-      </article>
-
-      <article class="kpi-card">
-        <div class="kpi-header">
-          <span>Warm Reconcile Turn Latency</span>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-          </svg>
-        </div>
-        <div id="kpi-median-turn" class="kpi-value mono">0 ms</div>
-        <div class="kpi-subtext mono">
-          <span id="kpi-phase-breakdown">Fetch 0ms · Build/Test 0ms · Render 0ms · Apply 0ms</span>
-        </div>
-      </article>
-
-      <article class="kpi-card">
-        <div class="kpi-header">
-          <span>DurableDir Checkpoints</span>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-          </svg>
-        </div>
-        <div id="kpi-snapshots" class="kpi-value mono">0 Snapshots</div>
-        <div class="kpi-subtext mono">
-          <span id="kpi-total-turns">Total Turns: 0</span>
-          <span>Fidelity: VOLUMES</span>
-        </div>
-      </article>
-    </section>
-
-    <section class="action-bar" aria-label="Mission-Control Stage Actions">
+    <!-- Zone 2 — Unified Stage Command Bar (FIRST Element in <main class="page-shell">) -->
+    <section class="action-bar" aria-label="Mission-Control Stage Command Bar">
       <div class="action-group">
-        <button id="btn-wave" type="button" class="btn btn-primary">
+        <button id="btn-wave" type="button" class="btn btn-primary" title="Commit fulfillment-api release and fan out warm Actor build &amp; reconcile wave across W1..W3">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
           </svg>
-          <span>24-Tenant Commit Wave</span>
+          <span>Push Release Code (High-Density Build Wave)</span>
         </button>
 
-        <label for="target-tenant-select" class="mono">Target:</label>
-        <select id="target-tenant-select" class="select-input mono" aria-label="Target Tenant Environment"></select>
-
-        <button id="btn-single-commit" type="button" class="btn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="4"></circle>
-            <line x1="1.05" y1="12" x2="7" y2="12"></line>
-            <line x1="17.01" y1="12" x2="22.96" y2="12"></line>
-          </svg>
-          <span>Commit Tenant Release</span>
-        </button>
-      </div>
-
-      <div class="action-group">
-        <button id="btn-poison-buggy" type="button" class="btn btn-danger" title="Push pricing.go off-by-one cent discount regression caught by warm Build &amp; Test before SSA apply">
+        <button id="btn-poison-buggy" type="button" class="btn btn-warn" title="Push pricing.go off-by-one cent discount regression caught by warm Build &amp; Test before SSA apply">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="16 18 22 12 16 6"></polyline>
             <polyline points="8 6 2 12 8 18"></polyline>
           </svg>
-          <span>Poison: Buggy pricing.go</span>
+          <span>Push Buggy Code (pricing.go Regression)</span>
         </button>
 
-        <button id="btn-poison-oom" type="button" class="btn btn-danger" title="Commit dense Kustomize amplification overlay to trigger ACTOR_STATE_CRASHED">
+        <button id="btn-poison-oom" type="button" class="btn btn-danger" title="Inject runtime sandbox fault / Kustomize memory-bomb OOM into selected Actor sandbox">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
             <line x1="12" y1="9" x2="12" y2="13"></line>
             <line x1="12" y1="17" x2="12.01" y2="17"></line>
           </svg>
-          <span>Poison: Memory-Bomb OOM</span>
+          <span>Inject Sandbox Fault / OOM</span>
+        </button>
+
+        <button id="btn-recover" type="button" class="btn btn-ok" title="Invoke RevertActor to roll back to last green DurableDir volume snapshot in &lt;1s">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="1 4 1 10 7 10"></polyline>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+          </svg>
+          <span>RevertActor Recovery (&lt;1s)</span>
+        </button>
+      </div>
+
+      <div class="action-group">
+        <label for="target-tenant-select" class="mono">Actor:</label>
+        <select id="target-tenant-select" class="select-input mono" aria-label="Target Tenant Environment"></select>
+
+        <button id="btn-single-commit" type="button" class="btn" title="Reconcile selected Tenant Workflow Actor">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <line x1="1.05" y1="12" x2="7" y2="12"></line>
+            <line x1="17.01" y1="12" x2="22.96" y2="12"></line>
+          </svg>
+          <span>Reconcile Selected</span>
         </button>
 
         <button id="btn-poison-rbac" type="button" class="btn btn-warn" title="Attempt cross-namespace apply blocked by Identity Bridge actorJwt RBAC (403)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
           </svg>
-          <span>Poison: Cross-NS RBAC (403)</span>
+          <span>RBAC 403</span>
         </button>
 
         <button id="btn-poison-egress" type="button" class="btn btn-warn" title="Reference unapproved external HTTPS Kustomize base blocked by EgressPolicy">
@@ -198,55 +148,104 @@
             <circle cx="12" cy="12" r="10"></circle>
             <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
           </svg>
-          <span>Poison: Egress Escape (403)</span>
+          <span>Egress 403</span>
         </button>
 
-        <button id="btn-recover" type="button" class="btn btn-ok" title="Invoke RevertActor to restore pre-crash DurableDir snapshot and clean baseline manifests">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="1 4 1 10 7 10"></polyline>
-            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
-          </svg>
-          <span>RevertActor Recover</span>
-        </button>
-
-        <button id="btn-external-modal" type="button" class="btn">
+        <button id="btn-external-modal" type="button" class="btn" title="Register external HTTPS GitRepository with ate-secret://">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
             <polyline points="15 3 21 3 21 9"></polyline>
             <line x1="10" y1="14" x2="21" y2="3"></line>
           </svg>
-          <span>External GitHub Repo</span>
+          <span>External Repo</span>
         </button>
 
-        <button id="btn-reset" type="button" class="btn">
+        <button id="btn-reset" type="button" class="btn" title="Reset all 24 Tenant Workflow Actors to clean baseline">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="23 4 23 10 17 10"></polyline>
             <polyline points="1 20 1 14 7 14"></polyline>
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
           </svg>
-          <span>Fleet Reset</span>
+          <span>Stage Reset</span>
         </button>
+
+        <span id="live-run-status-pill" class="status-pill mono">IDLE · 24/24 SUSPENDED</span>
       </div>
     </section>
 
-    <section class="workerpool-panel" aria-label="3-Pod WorkerPool Slot Matrix">
+    <div id="status-banner" class="status-banner hidden" role="status" aria-live="polite">
+      <span id="status-banner-text"></span>
+      <button id="status-banner-close" type="button" class="btn">Dismiss</button>
+    </div>
+
+    <!-- Zone 3 — Unified 4-Card "Wow" Proof Telemetry Strip (SECOND Element in <main class="page-shell">) -->
+    <section class="wow-grid" aria-label="4-Card Wow Proof Telemetry Strip">
+      <article class="wow-card">
+        <div class="wow-header">
+          <span>1. WARM VS. COLD BUILD SPEED</span>
+          <span id="wow-badge-1" class="wow-badge badge-ok">CACHE HIT</span>
+        </div>
+        <div id="wow-metric-1" class="wow-metric mono">38 ms vs 31.4s</div>
+        <div id="wow-sub-1" class="wow-sub">
+          DurableDir (/var/lib/flux/.git + GOCACHE) warm incremental turn vs cold Pod + PVC spin-up
+        </div>
+      </article>
+
+      <article class="wow-card">
+        <div class="wow-header">
+          <span>2. HIGH-DENSITY MULTIPLEXING WAVE</span>
+          <span id="wow-badge-2" class="wow-badge badge-accent">0/9 SLOTS ACTIVE</span>
+        </div>
+        <div id="wow-metric-2" class="wow-metric mono">24/24 Actors · 3 Pods</div>
+        <div id="wow-sub-2" class="wow-sub">
+          9 concurrent gVisor slots across W1..W3; 0 idle Pods &amp; 0 PVCs when hibernated
+        </div>
+      </article>
+
+      <article class="wow-card">
+        <div class="wow-header">
+          <span>3. BAD PUSH &amp; REVERTACTOR</span>
+          <span id="wow-badge-3" class="wow-badge badge-purple">&lt;1s ROLLBACK</span>
+        </div>
+        <div id="wow-metric-3" class="wow-metric mono">Ready · snap-green</div>
+        <div id="wow-sub-3" class="wow-sub">
+          pricing.go regression isolated; RevertActor restores last green snapshot with warm cache
+        </div>
+      </article>
+
+      <article class="wow-card">
+        <div class="wow-header">
+          <span>4. ZERO-SECRET EGRESS INJECTION</span>
+          <span id="wow-badge-4" class="wow-badge badge-ok">ZERO_AMBIENT_SECRETS</span>
+        </div>
+        <div id="wow-metric-4" class="wow-metric mono">0 Secrets in Sandbox</div>
+        <div id="wow-sub-4" class="wow-sub">
+          ate-secret://k8s/.../git-oci-auth/token injected exclusively at atenet-egress
+        </div>
+      </article>
+    </section>
+
+    <!-- Zone 4 — Unified Full-Width 3-Pod / 9-Slot gVisor WorkerPool Rack (THIRD Element in <main class="page-shell">) -->
+    <section class="workerpool-panel" aria-label="3-Pod / 9-Slot gVisor WorkerPool Multiplexer">
       <div class="section-header">
         <h2 class="section-title">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-            <line x1="8" y1="21" x2="16" y2="21"></line>
-            <line x1="12" y1="17" x2="12" y2="21"></line>
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
           </svg>
-          <span>WorkerPool Multiplexer (3 gVisor Pods × 3 Concurrent Actor Slots = 9 Slots)</span>
+          <span>3-Pod / 9-Slot gVisor WorkerPool Multiplexer (W1..W3)</span>
         </h2>
-        <span id="workerpool-summary" class="badge-pill mono">0 / 9 slots active</span>
+        <span id="workerpool-summary" class="status-pill mono">pool: flux-reconciler-pool · 3 warm pods · 9 gVisor slots · 0 PVCs</span>
       </div>
       <div id="workers-grid" class="workers-grid"></div>
       <div id="fifo-queue-strip" class="fifo-queue-strip mono"></div>
     </section>
 
-    <div class="workspace-split">
-      <div>
+    <!-- Zone 5 — Unified 2-Column Stage Workspace Split (FOURTH Element in <main class="page-shell">) -->
+    <div class="stage-grid">
+      <section class="canvas-panel" aria-label="1. Live Execution Canvas">
         <div class="section-header">
           <h2 class="section-title">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -255,37 +254,44 @@
               <rect x="14" y="14" width="7" height="7"></rect>
               <rect x="3" y="14" width="7" height="7"></rect>
             </svg>
-            <span>24 Tenant Environments (1 Workflow Actor = 1 Flux GitRepository + Kustomization Pipeline)</span>
+            <span>1. Live Execution Canvas — 24-Tenant GitOps Fleet &amp; Reconcile Stream</span>
           </h2>
-          <span id="fleet-grid-hint" class="badge-pill">Click any tenant card to inspect</span>
+          <span id="fleet-grid-hint" class="status-pill mono">24/24 Ready · Click any tenant card to inspect</span>
         </div>
+
         <div id="tenants-grid" class="tenants-grid"></div>
 
-        <section class="feed-panel" aria-label="Live Reconcile Turn Event Feed">
+        <div class="inspector-section">
           <div class="section-header">
-            <h2 class="section-title">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <h3 class="section-title">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <polyline points="4 17 10 11 4 5"></polyline>
                 <line x1="12" y1="19" x2="20" y2="19"></line>
               </svg>
-              <span>Live Reconcile Turn Feed</span>
-            </h2>
-            <span id="feed-count-badge" class="badge-pill mono">0 events</span>
+              <span>Live Reconcile Turn Stream</span>
+            </h3>
+            <span id="feed-count-badge" class="status-pill mono">0 turns</span>
           </div>
           <div id="feed-list" class="feed-list mono"></div>
-        </section>
-      </div>
+        </div>
+      </section>
 
-      <aside id="inspector-panel" class="inspector-panel" aria-label="Tenant Inspector">
+      <aside id="inspector-panel" class="inspector-panel" aria-label="2. Actor &amp; Snapshot Turn Inspector">
         <div class="section-header">
-          <h2 id="inspector-title" class="section-title mono">Tenant Inspector: tenant-01</h2>
-          <span id="inspector-state-pill" class="state-pill pill-suspended mono">SUSPENDED</span>
+          <h2 class="section-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            <span id="inspector-title">2. Actor &amp; Snapshot Turn Inspector — tenant-01</span>
+          </h2>
+          <span id="inspector-state-pill" class="state-pill pill-suspended mono">SUSPENDED · READY</span>
         </div>
 
         <div id="inspector-meta-grid" class="kv-grid mono"></div>
 
         <div class="inspector-section">
-          <h3 class="inspector-subtitle">Phase Latency Breakdown</h3>
+          <h3 class="inspector-subtitle">4-Phase Sub-Second Turn Latency Breakdown</h3>
           <div class="phase-row mono">
             <span>1. Git Fetch</span>
             <progress id="prog-fetch" class="phase-progress" value="0" max="100"></progress>
@@ -297,35 +303,42 @@
             <span id="val-compile">0 ms</span>
           </div>
           <div class="phase-row mono">
-            <span>3. Kustomize</span>
+            <span>3. Kustomize / Package</span>
             <progress id="prog-render" class="phase-progress" value="0" max="100"></progress>
             <span id="val-render">0 ms</span>
           </div>
           <div class="phase-row mono">
-            <span>4. SSA + kstatus</span>
+            <span>4. Apply / Publish</span>
             <progress id="prog-apply" class="phase-progress" value="0" max="100"></progress>
             <span id="val-apply">0 ms</span>
           </div>
         </div>
 
         <div class="inspector-section">
-          <h3 class="inspector-subtitle">Synthesized Per-Actor EgressPolicy (Zero In-Sandbox Secrets)</h3>
-          <div id="inspector-egress" class="kv-grid mono"></div>
+          <h3 class="inspector-subtitle">Snapshot Lineage &amp; Revert Controls</h3>
+          <div class="snapshot-strip mono">
+            <span id="inspector-snapshot-tag">snap-green-tenant-01-v1 (VOLUMES)</span>
+            <div class="action-group">
+              <button id="btn-inspector-revert" type="button" class="btn btn-ok">RevertActor (&lt;1s)</button>
+              <button id="btn-inspector-env" type="button" class="btn">Inspect Env (0 Secrets)</button>
+            </div>
+          </div>
         </div>
 
         <div class="inspector-section">
-          <h3 class="inspector-subtitle">Flux SSA ResourceInventory &amp; kstatus Readiness</h3>
-          <div id="inspector-inventory" class="kv-grid mono"></div>
+          <h3 class="inspector-subtitle">Turn Output · Build/Test Log &amp; Zero-Secret Audit</h3>
+          <pre id="inspector-terminal" class="terminal-box mono"></pre>
+        </div>
+
+        <div class="inspector-section">
+          <h3 class="inspector-subtitle">Synthesized Per-Actor EgressPolicy &amp; SSA Inventory</h3>
+          <div id="inspector-egress" class="kv-grid mono"></div>
+          <div id="inspector-inventory" class="kv-grid mono" style="margin-top: 8px;"></div>
         </div>
 
         <div class="inspector-section">
           <h3 class="inspector-subtitle">Latest Git Commit Diff</h3>
           <pre id="inspector-diff" class="code-block"></pre>
-        </div>
-
-        <div class="inspector-section">
-          <h3 class="inspector-subtitle">Live Flux Kustomization CR (kustomize.toolkit.fluxcd.io/v1)</h3>
-          <pre id="inspector-yaml" class="code-block"></pre>
         </div>
       </aside>
     </div>
@@ -356,7 +369,7 @@
         </div>
         <div class="form-field">
           <label for="ext-cred-uri">ate-secret:// Credential URI (injected by atenet-egress)</label>
-          <input id="ext-cred-uri" type="text" class="text-input mono" placeholder="ate-secret://k8s.io/default/flux-substrate/git-tenant-01/token" />
+          <input id="ext-cred-uri" type="text" class="text-input mono" placeholder="ate-secret://k8s.io/default/flux-substrate/git-oci-auth/token" />
         </div>
         <div class="action-group">
           <button type="submit" class="btn btn-primary">Synthesize EgressPolicy &amp; Reconcile</button>

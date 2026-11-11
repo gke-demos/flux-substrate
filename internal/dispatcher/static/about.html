@@ -11,18 +11,23 @@
     <div class="brand-group">
       <span class="brand-icon" aria-hidden="true">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="12 2 21 7 21 17 12 22 3 17 3 7 12 2"></polygon>
-          <polyline points="3.3 7 12 12 20.7 7"></polyline>
-          <line x1="12" y1="22" x2="12" y2="12"></line>
+          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+          <path d="M2 17l10 5 10-5"></path>
+          <path d="M2 12l10 5 10-5"></path>
         </svg>
       </span>
       <div>
-        <h1 class="brand-title">FluxCD on Agent Substrate — How It Works</h1>
-        <p class="brand-subtitle">fulfillment-api · Interactive Architecture · Signal Flows · ZERO_AMBIENT_SECRETS · Volume Snapshots</p>
+        <h1 class="brand-title">FluxCD on Agent Substrate</h1>
+        <p class="subtitle">fulfillment-api · High-Density gVisor Actor Runner · 3-Pod / 9-Slot WorkerPool (v1.0.0)</p>
+      </div>
+      <div class="suite-switcher" role="navigation" aria-label="Cross-Platform Suite Switcher">
+        <a id="suite-link-flux" href="http://localhost:18080" class="suite-pill active">Flux :18080</a>
+        <a id="suite-link-argo" href="http://localhost:18081" class="suite-pill">Argo :18081</a>
+        <a id="suite-link-tekton" href="http://localhost:18090" class="suite-pill">Tekton :18090</a>
       </div>
     </div>
 
-    <nav class="nav-links" aria-label="Primary Navigation">
+    <nav class="nav-tabs" aria-label="Primary Navigation">
       <a href="/" class="nav-link">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="3" y="3" width="7" height="7"></rect>
@@ -42,8 +47,14 @@
       </a>
     </nav>
 
-    <div class="topbar-controls">
-      <span class="badge-pill mono">ADR-0001 · ADR-0002 · ADR-0003</span>
+    <div class="topbar-right">
+      <span class="status-pill mono">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>fulfillment-api.git @ main (v1)</span>
+      </span>
+      <span class="status-pill pill-secret-ok mono">ZERO_AMBIENT_SECRETS</span>
+      <span class="status-pill mono">atespace: flux-substrate</span>
+
       <div id="theme-toggle" class="theme-toggle" role="group" aria-label="Projector Light Mode Toggle">
         <button id="theme-dark-btn" type="button" class="theme-segment active" aria-label="Dark Mode" title="Dark Mode">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -96,11 +107,10 @@
             </svg>
             <span>Interactive System Topology (Click any component node or step through signal flows)</span>
           </h2>
-          <span id="flow-step-indicator" class="badge-pill mono">Step 1 / 4</span>
+          <span id="flow-step-indicator" class="status-pill mono">Step 1 / 4</span>
         </div>
 
         <svg id="topology-svg" class="topology-svg" viewBox="0 0 920 420" role="img" aria-label="FluxCD on Agent Substrate Architecture Topology">
-          <!-- Signal Edges -->
           <path id="edge-dispatcher-router" class="topo-edge" d="M 190 120 L 310 120"></path>
           <path id="edge-router-actor" class="topo-edge" d="M 460 120 L 560 120"></path>
           <path id="edge-actor-durable" class="topo-edge" d="M 670 175 L 670 265"></path>
@@ -108,7 +118,6 @@
           <path id="edge-egress-git" class="topo-edge" d="M 310 285 L 190 250"></path>
           <path id="edge-egress-bridge" class="topo-edge" d="M 310 315 L 190 345"></path>
 
-          <!-- Node 1: Dispatcher -->
           <g id="node-dispatcher" class="topo-node active" data-node="dispatcher" transform="translate(20, 75)">
             <rect width="170" height="90" rx="8"></rect>
             <text x="14" y="28">Dispatcher Coordinator</text>
@@ -116,7 +125,6 @@
             <text x="14" y="66" class="topo-sub">9-Slot FIFO Multiplexer</text>
           </g>
 
-          <!-- Node 2: atenet-router -->
           <g id="node-router" class="topo-node" data-node="router" transform="translate(310, 75)">
             <rect width="150" height="90" rx="8"></rect>
             <text x="14" y="28">atenet-router</text>
@@ -124,26 +132,23 @@
             <text x="14" y="66" class="topo-sub">Wake-on-Request + mTLS</text>
           </g>
 
-          <!-- Node 3: WorkerPool + Workflow Actor -->
           <g id="node-actor" class="topo-node" data-node="actor" transform="translate(560, 55)">
             <rect width="230" height="120" rx="8"></rect>
             <text x="14" y="26">Workflow Actor (gVisor Sandbox)</text>
             <text x="14" y="46" class="topo-sub">WorkerPool W1..W3 (3x3 = 9 slots)</text>
-            <text x="14" y="66" class="topo-sub">1. fluxcd/pkg/git/gogit</text>
-            <text x="14" y="84" class="topo-sub">2. kustomize/api/krusty</text>
-            <text x="14" y="102" class="topo-sub">3. fluxcd/pkg/ssa + kstatus</text>
+            <text x="14" y="66" class="topo-sub">1. Fetch + 2. Build &amp; Test</text>
+            <text x="14" y="84" class="topo-sub">3. kustomize/api/krusty</text>
+            <text x="14" y="102" class="topo-sub">4. fluxcd/pkg/ssa + kstatus</text>
           </g>
 
-          <!-- Node 4: DurableDir Volume Snapshot -->
           <g id="node-durable" class="topo-node" data-node="durable" transform="translate(560, 265)">
             <rect width="230" height="95" rx="8"></rect>
             <text x="14" y="28">DurableDir (/var/lib/flux)</text>
             <text x="14" y="48" class="topo-sub">SNAPSHOT_FIDELITY_VOLUMES</text>
-            <text x="14" y="66" class="topo-sub">Warm Shallow .git + Inventory</text>
+            <text x="14" y="66" class="topo-sub">Warm .git + Build Cache</text>
             <text x="14" y="82" class="topo-sub">RevertActor Snapshot Rollback</text>
           </g>
 
-          <!-- Node 5: atenet-egress -->
           <g id="node-egress" class="topo-node" data-node="egress" transform="translate(310, 255)">
             <rect width="150" height="105" rx="8"></rect>
             <text x="14" y="26">atenet-egress</text>
@@ -152,15 +157,13 @@
             <text x="14" y="82" class="topo-sub">actorJwt + ate-secret://</text>
           </g>
 
-          <!-- Node 6: Smart HTTP Git / GitHub -->
           <g id="node-git" class="topo-node" data-node="git" transform="translate(20, 210)">
             <rect width="170" height="78" rx="8"></rect>
-            <text x="14" y="26">Git Server / GitHub</text>
+            <text x="14" y="26">Git Server / fulfillment-api</text>
             <text x="14" y="46" class="topo-sub">Smart HTTP upload-pack</text>
             <text x="14" y="64" class="topo-sub">Incremental Delta Packs</text>
           </g>
 
-          <!-- Node 7: Identity Bridge + kube-apiserver -->
           <g id="node-bridge" class="topo-node" data-node="bridge" transform="translate(20, 310)">
             <rect width="170" height="86" rx="8"></rect>
             <text x="14" y="26">Identity Bridge -&gt; K8s API</text>
@@ -168,14 +171,13 @@
             <text x="14" y="64" class="topo-sub">Impersonate-User RBAC</text>
           </g>
 
-          <!-- Animated Signal Packet -->
           <circle id="signal-packet" cx="105" cy="120" r="8" fill="#38bdf8"></circle>
         </svg>
 
         <div class="flow-step-box">
           <div class="section-header">
             <h3 id="flow-step-title" class="section-title mono">Flow 1 · Step 1: Git Webhook or Flux CR Change Arrives</h3>
-            <span id="flow-step-adr" class="badge-pill mono">ADR-0001</span>
+            <span id="flow-step-adr" class="status-pill mono">ADR-0001</span>
           </div>
           <p id="flow-step-desc"></p>
           <pre id="flow-step-wire" class="code-block mono"></pre>
@@ -185,7 +187,7 @@
       <aside class="about-card" aria-label="Component Deep-Dive &amp; Actor State Machine">
         <div class="section-header">
           <h2 id="component-title" class="section-title">Component Deep-Dive</h2>
-          <span id="component-adr-badge" class="badge-pill mono">ADR-0001</span>
+          <span id="component-adr-badge" class="status-pill mono">ADR-0001</span>
         </div>
         <p id="component-summary"></p>
         <div id="component-facts" class="kv-grid mono"></div>
@@ -206,7 +208,7 @@
             <g class="topo-node" transform="translate(215, 25)">
               <rect width="130" height="48" rx="6"></rect>
               <text x="12" y="22">RUNNING (W1..W3)</text>
-              <text x="12" y="38" class="topo-sub">Fetch·Render·Apply</text>
+              <text x="12" y="38" class="topo-sub">Fetch·Build·Apply</text>
             </g>
             <g class="topo-node" transform="translate(215, 145)">
               <rect width="130" height="48" rx="6"></rect>
@@ -257,14 +259,14 @@
             <td>0 MiB when idle, high Pod scheduling &amp; image pull churn on wake</td>
           </tr>
           <tr>
-            <td class="mono">Git Checkout Cache</td>
-            <td>Warm shallow .git persisted in DurableDir (/var/lib/flux); incremental delta fetch only</td>
+            <td class="mono">Git &amp; Build Cache</td>
+            <td>Warm shallow .git + build-cache persisted in DurableDir (/var/lib/flux); incremental delta fetch only</td>
             <td>Ephemeral tarball artifact download + unpack every reconcile</td>
-            <td>Cold full/shallow git clone on every Job execution</td>
+            <td>Cold full/shallow git clone + cold compile on every Job execution</td>
           </tr>
           <tr>
-            <td class="mono">Kustomize OOM Blast Radius</td>
-            <td>Strictly contained to the single tenant's Workflow Actor (ACTOR_STATE_CRASHED + 1-click RevertActor)</td>
+            <td class="mono">Bad Push &amp; OOM Blast Radius</td>
+            <td>Strictly contained to the single tenant's Workflow Actor (pricing.go test gate + &lt;1s RevertActor)</td>
             <td>OOMKills the shared kustomize-controller Pod, halting all 24 tenants</td>
             <td>Isolated per Job, but leaves dirty partial state without volume snapshot rollback</td>
           </tr>
