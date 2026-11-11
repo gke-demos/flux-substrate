@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 
 	"github.com/gke-demos/flux-substrate/internal/actor"
@@ -34,6 +35,7 @@ type LocalActorBackendConfig struct {
 	GitBearerToken     string
 	TrustBundlePEM     []byte
 	MaxConcurrentSlots int
+	MaxRenderBytes     int64
 	TurnHook           func(ctx context.Context, inv TurnInvocation) error
 }
 
@@ -60,8 +62,9 @@ type LocalActorBackend struct {
 	activeSlots atomic.Int32
 	peakSlots   atomic.Int32
 
-	mu     sync.Mutex
-	actors map[string]*localActorRecord
+	mu             sync.Mutex
+	actors         map[string]*localActorRecord
+	trustBundlePEM []byte
 }
 
 // NewLocalActorBackend creates a capacity-bounded local ActorBackend (default 9 slots).
@@ -88,12 +91,26 @@ func NewLocalActorBackend(cfg LocalActorBackendConfig) (*LocalActorBackend, erro
 	}
 
 	return &LocalActorBackend{
-		cfg:          cfg,
-		durableRoot:  durableRoot,
-		snapshotRoot: snapshotRoot,
-		maxSlots:     int32(maxSlots),
-		actors:       make(map[string]*localActorRecord),
+		cfg:            cfg,
+		durableRoot:    durableRoot,
+		snapshotRoot:   snapshotRoot,
+		maxSlots:       int32(maxSlots),
+		actors:         make(map[string]*localActorRecord),
+		trustBundlePEM: append([]byte(nil), cfg.TrustBundlePEM...),
 	}, nil
+}
+
+// AddTrustBundlePEM appends additional PEM certificates to the local actor trust bundle.
+func (b *LocalActorBackend) AddTrustBundlePEM(pemBytes []byte) {
+	if len(pemBytes) == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.trustBundlePEM) > 0 && b.trustBundlePEM[len(b.trustBundlePEM)-1] != '\n' {
+		b.trustBundlePEM = append(b.trustBundlePEM, '\n')
+	}
+	b.trustBundlePEM = append(b.trustBundlePEM, pemBytes...)
 }
 
 // PeakActiveSlots returns the maximum number of simultaneously running Reconcile Turns
@@ -194,6 +211,13 @@ func (b *LocalActorBackend) InvokeReconcile(ctx context.Context, inv TurnInvocat
 	if atespace == "" {
 		atespace = b.cfg.Atespace
 	}
+	var allowedHosts []string
+	if h := strings.TrimSpace(rec.policy.GitHost); h != "" {
+		allowedHosts = append(allowedHosts, h)
+	}
+	if h := strings.TrimSpace(rec.policy.KubeBridgeHost); h != "" {
+		allowedHosts = append(allowedHosts, h)
+	}
 	rec.mu.Unlock()
 
 	if b.cfg.TurnHook != nil {
@@ -215,15 +239,28 @@ func (b *LocalActorBackend) InvokeReconcile(ctx context.Context, inv TurnInvocat
 		}
 	}
 
+	b.mu.Lock()
+	trustPEM := append([]byte(nil), b.trustBundlePEM...)
+	b.mu.Unlock()
+
+	allowedNS := strings.TrimSpace(inv.Request.TargetNamespace)
+	if allowedNS == "" {
+		allowedNS = actorName
+	}
+	impersonatedPrincipal := fmt.Sprintf("ate:actor:%s:%s", atespace, allowedNS)
+
 	actorSrv, err := actor.NewServer(actor.Config{
-		ActorName:       actorName,
-		Atespace:        atespace,
-		DurableDir:      durableDir,
-		TrustBundlePEM:  b.cfg.TrustBundlePEM,
-		GitBearerToken:  b.cfg.GitBearerToken,
-		KubeBridgeURL:   b.cfg.KubeBridgeURL,
-		KubeBearerToken: b.cfg.KubeBearerToken,
-		RestConfig:      restCfg,
+		ActorName:          actorName,
+		Atespace:           atespace,
+		DurableDir:         durableDir,
+		TrustBundlePEM:     trustPEM,
+		GitBearerToken:     b.cfg.GitBearerToken,
+		KubeBridgeURL:      b.cfg.KubeBridgeURL,
+		KubeBearerToken:    b.cfg.KubeBearerToken,
+		KubeWrapTransport:  namespaceIsolationTransport(impersonatedPrincipal, allowedNS),
+		RestConfig:         restCfg,
+		MaxRenderBytes:     b.cfg.MaxRenderBytes,
+		AllowedEgressHosts: allowedHosts,
 	})
 	if err != nil {
 		return actor.ReconcileResult{}, http.StatusInternalServerError, fmt.Errorf("boot Workflow Actor %s: %w", actorName, err)
@@ -249,7 +286,74 @@ func (b *LocalActorBackend) InvokeReconcile(ctx context.Context, inv TurnInvocat
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return actor.ReconcileResult{}, resp.StatusCode, fmt.Errorf("decode actor ReconcileResult: %w", err)
 	}
+	if resp.StatusCode == http.StatusInsufficientStorage || result.FailedStage == "oom" {
+		rec.mu.Lock()
+		rec.state = ActorStateCrashed
+		rec.mu.Unlock()
+		reason := strings.TrimSpace(result.Error)
+		if reason == "" {
+			reason = "sandbox memory limit exceeded during Kustomize evaluation"
+		}
+		return result, resp.StatusCode, &ActorCrashError{
+			ActorName: actorName,
+			Reason:    reason,
+		}
+	}
 	return result, resp.StatusCode, nil
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func namespaceIsolationTransport(impersonatedUser, allowedNamespace string) func(http.RoundTripper) http.RoundTripper {
+	return func(next http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			cleanPath := strings.TrimRight(req.URL.Path, "/")
+			if pr, ok := parseResourceRoute(cleanPath); ok {
+				if !pr.def.Namespaced && req.Method != http.MethodGet {
+					return forbiddenKubeResponse(req, pr.def.Kind, pr.name,
+						fmt.Sprintf("%s %q is forbidden: User %q cannot mutate cluster-scoped resource %q",
+							pr.def.Resource, pr.name, impersonatedUser, pr.def.Resource)), nil
+				}
+				if pr.def.Namespaced && pr.namespace != "" && pr.namespace != allowedNamespace {
+					return forbiddenKubeResponse(req, pr.def.Kind, pr.name,
+						fmt.Sprintf("%s %q is forbidden: User %q cannot access resource %q in namespace %q",
+							pr.def.Resource, pr.name, impersonatedUser, pr.def.Resource, pr.namespace)), nil
+				}
+			}
+			return next.RoundTrip(req)
+		})
+	}
+}
+
+func forbiddenKubeResponse(req *http.Request, kind, name, msg string) *http.Response {
+	st := v1.Status{
+		TypeMeta: v1.TypeMeta{Kind: "Status", APIVersion: "v1"},
+		Status:   v1.StatusFailure,
+		Message:  msg,
+		Reason:   v1.StatusReasonForbidden,
+		Code:     http.StatusForbidden,
+	}
+	if name != "" || kind != "" {
+		st.Details = &v1.StatusDetails{Name: name, Kind: kind}
+	}
+	raw, _ := json.Marshal(st)
+	hdr := make(http.Header)
+	hdr.Set("Content-Type", "application/json")
+	return &http.Response{
+		Status:        "403 Forbidden",
+		StatusCode:    http.StatusForbidden,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        hdr,
+		Body:          io.NopCloser(bytes.NewReader(raw)),
+		ContentLength: int64(len(raw)),
+		Request:       req,
+	}
 }
 
 // SuspendActor checkpoints the actor's clean DurableDir volume snapshot and marks it SUSPENDED.

@@ -28,19 +28,21 @@ import (
 
 // LocalStackConfig configures the standalone single-process --mode=local runtime.
 type LocalStackConfig struct {
-	BaseDir       string
-	Atespace      string
-	TenantCount   int
-	RestConfig    *rest.Config
-	SyncInterval  time.Duration
-	RetryInterval time.Duration
-	WebhookSecret string
+	BaseDir        string
+	Atespace       string
+	TenantCount    int
+	RestConfig     *rest.Config
+	SyncInterval   time.Duration
+	RetryInterval  time.Duration
+	WebhookSecret  string
+	PresenterToken string
 }
 
 // LocalStack bundles the in-process Smart HTTP TLS Git server, capacity-bounded
 // 9-slot LocalActorBackend, target Kubernetes store, and Dispatcher for --mode=local.
 type LocalStack struct {
 	dispatcher    *Dispatcher
+	localBackend  *LocalActorBackend
 	gitServer     *gitserver.Server
 	kubeClient    client.Client
 	localKube     *LocalKubeServer
@@ -175,6 +177,7 @@ func NewLocalStack(ctx context.Context, cfg LocalStackConfig) (*LocalStack, erro
 		cleanupOnErr(stack)
 		return nil, err
 	}
+	stack.localBackend = localBackend
 
 	if err := SeedFleet(ctx, SeedFleetOptions{
 		KubeClient:       kc,
@@ -198,6 +201,7 @@ func NewLocalStack(ctx context.Context, cfg LocalStackConfig) (*LocalStack, erro
 		GitServer:      gs,
 		KubeBridgeURL:  "https://kube-bridge.flux-substrate.svc",
 		WebhookSecret:  cfg.WebhookSecret,
+		PresenterToken: cfg.PresenterToken,
 	})
 	if err != nil {
 		cleanupOnErr(stack)
@@ -221,6 +225,11 @@ func (s *LocalStack) Handler() http.Handler {
 // Dispatcher returns the underlying Dispatcher instance.
 func (s *LocalStack) Dispatcher() *Dispatcher {
 	return s.dispatcher
+}
+
+// LocalBackend returns the capacity-bounded LocalActorBackend instance.
+func (s *LocalStack) LocalBackend() *LocalActorBackend {
+	return s.localBackend
 }
 
 // GitServer returns the in-process Smart HTTP GitServer.

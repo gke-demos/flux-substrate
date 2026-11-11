@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -874,6 +875,224 @@ data:
 	status3, turn3 := postReconcile()
 	if status3 != http.StatusForbidden {
 		t.Fatalf("Turn 3 worker-for-actor status = %d, want 403 Forbidden (err=%q)", status3, turn3.Error)
+	}
+}
+
+func TestWorkflowActorMemoryBombOverlayFailsClosedWithOOMStage(t *testing.T) {
+	tenantNS := newTenantNamespace(t, "tenant-oom")
+
+	gs, repoURL, trustPEM := newGitFixtureWithEgressInjector(t, tenantNS)
+	if _, err := gs.SeedDefaultTenant(tenantNS, tenantNS); err != nil {
+		t.Fatalf("SeedDefaultTenant: %v", err)
+	}
+
+	durableDir := t.TempDir()
+	actorSrv, err := actor.NewServer(actor.Config{
+		ActorName:      tenantNS,
+		Atespace:       "flux-substrate",
+		DurableDir:     durableDir,
+		TrustBundlePEM: trustPEM,
+		RestConfig:     sharedRestCfg,
+	})
+	if err != nil {
+		t.Fatalf("actor.NewServer: %v", err)
+	}
+	actorTS := httptest.NewServer(actorSrv.Handler())
+	t.Cleanup(actorTS.Close)
+
+	doReconcile := func() (int, actor.ReconcileResult) {
+		t.Helper()
+		payload, _ := json.Marshal(actor.ReconcileRequest{
+			TenantID:        tenantNS,
+			RepoURL:         repoURL,
+			Branch:          "main",
+			Path:            "./",
+			TargetNamespace: tenantNS,
+		})
+		resp, reqErr := actorTS.Client().Post(actorTS.URL+"/reconcile", "application/json", bytes.NewReader(payload))
+		if reqErr != nil {
+			t.Fatalf("POST /reconcile: %v", reqErr)
+		}
+		defer resp.Body.Close()
+		var out actor.ReconcileResult
+		if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+			t.Fatalf("decode ReconcileResult: %v", decErr)
+		}
+		return resp.StatusCode, out
+	}
+
+	// Turn 1: baseline manifests reconcile cleanly.
+	code1, turn1 := doReconcile()
+	if code1 != http.StatusOK || !turn1.Ready {
+		t.Fatalf("Turn 1 code=%d ready=%v, want 200 Ready=true (err=%q)", code1, turn1.Ready, turn1.Error)
+	}
+
+	// Turn 2: commit dense Kustomize Memory-Bomb overlay and verify bounded OOM failure.
+	bombRev, err := gs.Commit(tenantNS, gitserver.CommitChange{
+		ReplaceTree: true,
+		Upsert:      gitserver.MemoryBombManifests(tenantNS, tenantNS),
+		Message:     "Poison pill: Kustomize memory-bomb overlay",
+	})
+	if err != nil {
+		t.Fatalf("Commit MemoryBombManifests: %v", err)
+	}
+
+	code2, turn2 := doReconcile()
+	if code2 != http.StatusInsufficientStorage {
+		t.Fatalf("Turn 2 memory-bomb status = %d, want %d (stage=%q err=%q)", code2, http.StatusInsufficientStorage, turn2.FailedStage, turn2.Error)
+	}
+	if turn2.Ready {
+		t.Errorf("Turn 2 Ready = true, want false")
+	}
+	if turn2.FailedStage != "oom" {
+		t.Errorf("Turn 2 FailedStage = %q, want %q", turn2.FailedStage, "oom")
+	}
+	if turn2.CommitSHA != bombRev.SHA {
+		t.Errorf("Turn 2 CommitSHA = %q, want %q", turn2.CommitSHA, bombRev.SHA)
+	}
+	if !turn2.CacheHit {
+		t.Errorf("Turn 2 CacheHit = false, want true")
+	}
+
+	// Turn 3: commit clean recovery tree (ReplaceTree removes bomb payload) and verify clean reconcile.
+	recovRev, err := gs.Commit(tenantNS, gitserver.CommitChange{
+		ReplaceTree: true,
+		Upsert:      gitserver.DefaultTenantManifests(tenantNS, tenantNS),
+		Message:     "Recover baseline manifests",
+	})
+	if err != nil {
+		t.Fatalf("Commit recovery manifests: %v", err)
+	}
+
+	code3, turn3 := doReconcile()
+	if code3 != http.StatusOK || !turn3.Ready {
+		t.Fatalf("Turn 3 recovery code=%d ready=%v, want 200 Ready=true (err=%q)", code3, turn3.Ready, turn3.Error)
+	}
+	if turn3.CommitSHA != recovRev.SHA || !turn3.CacheHit {
+		t.Errorf("Turn 3 CommitSHA=%q CacheHit=%v, want %q and true", turn3.CommitSHA, turn3.CacheHit, recovRev.SHA)
+	}
+}
+
+func TestWorkflowActorUnauthorizedRemoteBaseEgressFailsClosed(t *testing.T) {
+	tenantNS := newTenantNamespace(t, "tenant-egress")
+
+	gs, repoURL, trustPEM := newGitFixtureWithEgressInjector(t, tenantNS)
+	if _, err := gs.SeedDefaultTenant(tenantNS, tenantNS); err != nil {
+		t.Fatalf("SeedDefaultTenant: %v", err)
+	}
+	parsedRepoURL, err := url.Parse(repoURL)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+
+	// Unapproved external HTTPS remote-base server on 127.0.0.1:0 — must receive ZERO requests
+	// when the actor enforces AllowedEgressHosts.
+	var spyHits atomic.Int64
+	spySrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		spyHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: exfil\ndata:\n  leaked: \"true\"\n"))
+	}))
+	t.Cleanup(spySrv.Close)
+
+	durableDir := t.TempDir()
+	actorSrv, err := actor.NewServer(actor.Config{
+		ActorName:          tenantNS,
+		Atespace:           "flux-substrate",
+		DurableDir:         durableDir,
+		TrustBundlePEM:     trustPEM,
+		RestConfig:         sharedRestCfg,
+		AllowedEgressHosts: []string{parsedRepoURL.Host},
+	})
+	if err != nil {
+		t.Fatalf("actor.NewServer: %v", err)
+	}
+	actorTS := httptest.NewServer(actorSrv.Handler())
+	t.Cleanup(actorTS.Close)
+
+	postTurn := func(ts *httptest.Server) (int, actor.ReconcileResult) {
+		t.Helper()
+		payload, _ := json.Marshal(actor.ReconcileRequest{
+			TenantID:        tenantNS,
+			RepoURL:         repoURL,
+			Branch:          "main",
+			Path:            "./",
+			TargetNamespace: tenantNS,
+		})
+		resp, reqErr := ts.Client().Post(ts.URL+"/reconcile", "application/json", bytes.NewReader(payload))
+		if reqErr != nil {
+			t.Fatalf("POST /reconcile: %v", reqErr)
+		}
+		defer resp.Body.Close()
+		var out actor.ReconcileResult
+		if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+			t.Fatalf("decode ReconcileResult: %v", decErr)
+		}
+		return resp.StatusCode, out
+	}
+
+	// Turn 1: baseline turn succeeds against approved Git host.
+	code1, turn1 := postTurn(actorTS)
+	if code1 != http.StatusOK || !turn1.Ready {
+		t.Fatalf("Turn 1 code=%d ready=%v, want 200 Ready=true (err=%q)", code1, turn1.Ready, turn1.Error)
+	}
+
+	// Turn 2: commit kustomization.yaml referencing unapproved remote HTTPS base.
+	egressRev, err := gs.Commit(tenantNS, gitserver.CommitChange{
+		ReplaceTree: true,
+		Upsert:      gitserver.UnauthorizedEgressManifests(tenantNS, tenantNS, spySrv.URL+"/remote-base.yaml"),
+		Message:     "Poison pill: unauthorized remote-base egress",
+	})
+	if err != nil {
+		t.Fatalf("Commit UnauthorizedEgressManifests: %v", err)
+	}
+
+	code2, turn2 := postTurn(actorTS)
+	if code2 != http.StatusForbidden {
+		t.Fatalf("Turn 2 egress poison status = %d, want 403 Forbidden (stage=%q err=%q)", code2, turn2.FailedStage, turn2.Error)
+	}
+	if spyHits.Load() != 0 {
+		t.Fatalf("unapproved remote-base server received %d requests, want 0 (fail closed before socket connect)", spyHits.Load())
+	}
+	if turn2.Ready {
+		t.Errorf("Turn 2 Ready = true, want false")
+	}
+	if turn2.FailedStage != "egress" {
+		t.Errorf("Turn 2 FailedStage = %q, want %q", turn2.FailedStage, "egress")
+	}
+	if turn2.CommitSHA != egressRev.SHA {
+		t.Errorf("Turn 2 CommitSHA = %q, want %q", turn2.CommitSHA, egressRev.SHA)
+	}
+
+	// Turn 3: also verify cluster-mode actor (AllowedEgressHosts unset, where Substrate DNS relay
+	// returns NXDOMAIN or atenet-egress returns 403) classifies remote fetch denial as egress 403.
+	if _, err := gs.Commit(tenantNS, gitserver.CommitChange{
+		ReplaceTree: true,
+		Upsert:      gitserver.UnauthorizedEgressManifests(tenantNS, tenantNS, ""),
+		Message:     "Poison pill: default NXDOMAIN remote-base egress",
+	}); err != nil {
+		t.Fatalf("Commit default NXDOMAIN egress manifests: %v", err)
+	}
+
+	clusterActorSrv, err := actor.NewServer(actor.Config{
+		ActorName:      tenantNS,
+		Atespace:       "flux-substrate",
+		DurableDir:     durableDir,
+		TrustBundlePEM: trustPEM,
+		RestConfig:     sharedRestCfg,
+	})
+	if err != nil {
+		t.Fatalf("actor.NewServer cluster mode: %v", err)
+	}
+	clusterActorTS := httptest.NewServer(clusterActorSrv.Handler())
+	t.Cleanup(clusterActorTS.Close)
+
+	code3, turn3 := postTurn(clusterActorTS)
+	if code3 != http.StatusForbidden {
+		t.Fatalf("Turn 3 NXDOMAIN egress status = %d, want 403 Forbidden (stage=%q err=%q)", code3, turn3.FailedStage, turn3.Error)
+	}
+	if turn3.FailedStage != "egress" {
+		t.Errorf("Turn 3 FailedStage = %q, want %q", turn3.FailedStage, "egress")
 	}
 }
 

@@ -46,13 +46,18 @@ const (
 type TriggerReason string
 
 const (
-	TriggerCRSync   TriggerReason = "cr-sync"
-	TriggerWebhook  TriggerReason = "webhook"
-	TriggerInterval TriggerReason = "interval"
-	TriggerRetry    TriggerReason = "retry"
-	TriggerCommit   TriggerReason = "commit"
-	TriggerWave     TriggerReason = "wave"
-	TriggerRecover  TriggerReason = "recover"
+	TriggerCRSync       TriggerReason = "cr-sync"
+	TriggerWebhook      TriggerReason = "webhook"
+	TriggerInterval     TriggerReason = "interval"
+	TriggerRetry        TriggerReason = "retry"
+	TriggerCommit       TriggerReason = "commit"
+	TriggerWave         TriggerReason = "wave"
+	TriggerRecover      TriggerReason = "recover"
+	TriggerReset        TriggerReason = "reset"
+	TriggerPoisonOOM    TriggerReason = "poison-oom"
+	TriggerPoisonRBAC   TriggerReason = "poison-rbac"
+	TriggerPoisonEgress TriggerReason = "poison-egress"
+	TriggerExternalRepo TriggerReason = "external-repo"
 )
 
 // ActorSpec describes the desired Workflow Actor provisioned via ActorBackend.
@@ -217,10 +222,11 @@ type TurnEvent struct {
 
 // FleetStateResponse is returned from GET /api/state.
 type FleetStateResponse struct {
-	Mode       string           `json:"mode"`
-	Atespace   string           `json:"atespace"`
-	Summary    FleetSummary     `json:"summary"`
-	WorkerPool WorkerPoolStatus `json:"workerPool"`
-	Tenants    []TenantSummary  `json:"tenants"`
-	Events     []TurnEvent      `json:"events"`
+	Mode         string           `json:"mode"`
+	Atespace     string           `json:"atespace"`
+	AuthRequired bool             `json:"authRequired"`
+	Summary      FleetSummary     `json:"summary"`
+	WorkerPool   WorkerPoolStatus `json:"workerPool"`
+	Tenants      []TenantSummary  `json:"tenants"`
+	Events       []TurnEvent      `json:"events"`
 }

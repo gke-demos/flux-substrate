@@ -48,8 +48,14 @@ type gitWebhookPayload struct {
 }
 
 func (d *Dispatcher) registerActionRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/tenants/{id}/commit", d.handleSingleTenantCommit)
-	mux.HandleFunc("POST /api/wave", d.handleCommitWave)
+	mux.HandleFunc("POST /api/tenants/{id}/commit", d.requirePresenterAuth(d.handleSingleTenantCommit))
+	mux.HandleFunc("POST /api/wave", d.requirePresenterAuth(d.handleCommitWave))
+	mux.HandleFunc("POST /api/tenants/{id}/poison/oom", d.requirePresenterAuth(d.handlePoisonOOM))
+	mux.HandleFunc("POST /api/tenants/{id}/poison/rbac", d.requirePresenterAuth(d.handlePoisonRBAC))
+	mux.HandleFunc("POST /api/tenants/{id}/poison/egress", d.requirePresenterAuth(d.handlePoisonEgress))
+	mux.HandleFunc("POST /api/tenants/{id}/recover", d.requirePresenterAuth(d.handleRecoverTenant))
+	mux.HandleFunc("POST /api/reset", d.requirePresenterAuth(d.handleFleetReset))
+	mux.HandleFunc("POST /api/repos/external", d.requirePresenterAuth(d.handleRegisterExternalRepo))
 	mux.HandleFunc("POST /api/webhooks/git", d.handleGitWebhook)
 	mux.HandleFunc("POST /api/webhooks/git/{id}", d.handleGitWebhookByID)
 	mux.HandleFunc("POST /webhooks/git", d.handleGitWebhook)
@@ -371,6 +377,13 @@ func (d *Dispatcher) readAndVerifyWebhookBody(w http.ResponseWriter, r *http.Req
 
 	secret := d.cfg.WebhookSecret
 	if secret == "" {
+		if d.auth.isEnabled() {
+			if key, hasHeader := extractHeaderPresenterKey(r); hasHeader && d.auth.matchesToken(key) {
+				return rawBody, true
+			}
+			httputil.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "webhook or presenter authentication required"})
+			return nil, false
+		}
 		return rawBody, true
 	}
 
