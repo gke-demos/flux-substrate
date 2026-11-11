@@ -1,0 +1,3 @@
+# Collapse Flux source, render, and apply into a turn-based Workflow Actor
+
+Standard Flux v2 splits reconciliation across long-running `source-controller` and `kustomize-controller` pods that maintain cluster-wide `controller-runtime` informer caches and pass `.tar.gz` artifacts over pod-to-pod HTTP. On Agent Substrate, actors cannot dial one another directly and only save compute while `SUSPENDED`, so we collapse `fluxcd/pkg/git` fetching, `krusty` Kustomize rendering, `fluxcd/pkg/ssa` Server-Side Apply, and `kstatus` checks into a single turn-based `Workflow Actor` per `Tenant Environment` without cluster-wide informers, orchestrated by an external `Dispatcher` that still reconciles real Flux `GitRepository` and `Kustomization` CRDs.
