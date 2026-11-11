@@ -4,17 +4,22 @@ go 1.27.0
 
 require (
 	github.com/fluxcd/cli-utils v1.4.0
+	github.com/fluxcd/kustomize-controller/api v1.10.1
+	github.com/fluxcd/pkg/apis/meta v1.38.0
 	github.com/fluxcd/pkg/git v0.38.0
 	github.com/fluxcd/pkg/git/gogit v0.43.0
 	github.com/fluxcd/pkg/ssa v0.83.0
+	github.com/fluxcd/source-controller/api v1.10.1
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	k8s.io/api v0.37.1
+	k8s.io/apiextensions-apiserver v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
 	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/kustomize/api v0.21.2
 	sigs.k8s.io/kustomize/kyaml v0.21.2
+	sigs.k8s.io/yaml v1.6.0
 )
 
 require (
@@ -35,6 +40,8 @@ require (
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f // indirect
+	github.com/fluxcd/pkg/apis/acl v0.12.0 // indirect
+	github.com/fluxcd/pkg/apis/kustomize v1.23.0 // indirect
 	github.com/fluxcd/pkg/ssh v0.23.0 // indirect
 	github.com/fluxcd/pkg/version v0.11.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
@@ -104,7 +111,6 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
-	k8s.io/apiextensions-apiserver v0.37.1 // indirect
 	k8s.io/cli-runtime v0.37.1 // indirect
 	k8s.io/component-base v0.37.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
@@ -114,5 +120,4 @@ require (
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )
