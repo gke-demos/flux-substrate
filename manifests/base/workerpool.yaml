@@ -1,0 +1,15 @@
+apiVersion: k8s.ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: flux-reconciler-pool
+  namespace: ate-system
+  labels:
+    app.kubernetes.io/part-of: flux-substrate
+    pool.ate.dev/role: flux-reconciler
+spec:
+  replicas: 3
+  workerLabels:
+    pool.ate.dev/role: flux-reconciler
+  capacity:
+    cpuMillicores: 1500
+    memoryBytes: 1610612736

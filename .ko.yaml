@@ -1,0 +1,4 @@
+defaultBaseImage: cgr.dev/chainguard/static:latest
+defaultPlatforms:
+  - linux/amd64
+  - linux/arm64

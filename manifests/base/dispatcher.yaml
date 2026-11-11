@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-substrate-dispatcher
+  namespace: flux-substrate
+  labels:
+    app.kubernetes.io/name: dispatcher
+    app.kubernetes.io/part-of: flux-substrate
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flux-substrate-dispatcher
+  labels:
+    app.kubernetes.io/part-of: flux-substrate
+rules:
+  - apiGroups: ["source.toolkit.fluxcd.io", "kustomize.toolkit.fluxcd.io"]
+    resources: ["gitrepositories", "gitrepositories/status", "kustomizations", "kustomizations/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["", "apps", "rbac.authorization.k8s.io"]
+    resources: ["namespaces", "configmaps", "services", "deployments", "roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flux-substrate-dispatcher
+  labels:
+    app.kubernetes.io/part-of: flux-substrate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flux-substrate-dispatcher
+subjects:
+  - kind: ServiceAccount
+    name: flux-substrate-dispatcher
+    namespace: flux-substrate
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dispatcher
+  namespace: flux-substrate
+  labels:
+    app.kubernetes.io/name: dispatcher
+    app.kubernetes.io/part-of: flux-substrate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dispatcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dispatcher
+        app.kubernetes.io/part-of: flux-substrate
+        podidentity.podcert.ate.dev/inject: "true"
+    spec:
+      serviceAccountName: flux-substrate-dispatcher
+      containers:
+        - name: dispatcher
+          image: ko://github.com/gke-demos/flux-substrate/cmd/flux-substrate
+          args:
+            - --mode=dispatcher
+            - --addr=:8080
+            - --atespace=flux-substrate
+            - --control-addr=ate-system-server.ate-system.svc:443
+            - --router-url=https://atenet-router.ate-system.svc:8443
+            - --kube-bridge-url=https://kube-bridge.flux-substrate.svc
+          env:
+            - name: FLUX_SUBSTRATE_ACTOR_IMAGE
+              value: ko://github.com/gke-demos/flux-substrate/cmd/flux-substrate
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dispatcher
+  namespace: flux-substrate
+  labels:
+    app.kubernetes.io/name: dispatcher
+    app.kubernetes.io/part-of: flux-substrate
+spec:
+  selector:
+    app.kubernetes.io/name: dispatcher
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

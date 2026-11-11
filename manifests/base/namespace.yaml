@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flux-substrate
+  labels:
+    app.kubernetes.io/part-of: flux-substrate
+    reconciler.ate.dev/managed-by: flux-substrate

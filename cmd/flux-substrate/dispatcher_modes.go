@@ -22,6 +22,9 @@ type dispatcherCLIFlags struct {
 	dataDir        *string
 	watchNamespace *string
 	tenantCount    *int
+	controlAddr    *string
+	actorImage     *string
+	templateName   *string
 	routerURL      *string
 	routerCAFile   *string
 	podCertFile    *string
@@ -40,6 +43,9 @@ func registerDispatcherFlags(fs *flag.FlagSet) dispatcherCLIFlags {
 		dataDir:        fs.String("data-dir", os.Getenv("FLUX_SUBSTRATE_DATA_DIR"), "Local runtime directory for --mode=local repositories and DurableDir snapshots"),
 		watchNamespace: fs.String("watch-namespace", os.Getenv("WATCH_NAMESPACE"), "Optional namespace filter for Flux GitRepository and Kustomization CRs"),
 		tenantCount:    fs.Int("tenant-count", defaultTenants, "Number of Tenant Environments seeded in --mode=local"),
+		controlAddr:    fs.String("control-addr", os.Getenv("ATE_CONTROL_ADDR"), "Agent Substrate Control gRPC address (e.g. ate-system-server.ate-system.svc:443)"),
+		actorImage:     fs.String("actor-image", os.Getenv("FLUX_SUBSTRATE_ACTOR_IMAGE"), "Digest-pinned Workflow Actor container image for ActorTemplate"),
+		templateName:   fs.String("template-name", os.Getenv("ATE_TEMPLATE_NAME"), "Agent Substrate ActorTemplate name (default: flux-reconciler-v1)"),
 		routerURL:      fs.String("router-url", os.Getenv("ATENET_ROUTER_URL"), "Agent Substrate atenet-router base URL for --mode=dispatcher"),
 		routerCAFile:   fs.String("router-ca-file", os.Getenv("ATENET_ROUTER_CA_FILE"), "CA bundle PEM path for atenet-router TLS"),
 		podCertFile:    fs.String("pod-cert-file", os.Getenv("ATE_POD_CERT_FILE"), "Pod identity mTLS client certificate PEM path"),
@@ -102,8 +108,26 @@ func buildDispatcherModeHandler(
 		}
 
 		var backend dispatcher.ActorBackend
+		var backendClose func()
 		var tempDispatcherDir string
-		if strings.TrimSpace(*opts.routerURL) != "" {
+		if strings.TrimSpace(*opts.routerURL) != "" && strings.TrimSpace(*opts.controlAddr) != "" {
+			sb, sbErr := dispatcher.NewSubstrateActorBackend(dispatcher.SubstrateBackendConfig{
+				Atespace:      atespace,
+				TemplateName:  *opts.templateName,
+				ActorImage:    *opts.actorImage,
+				KubeBridgeURL: kubeBridgeURL,
+				ControlAddr:   *opts.controlAddr,
+				RouterURL:     *opts.routerURL,
+				RouterCAFile:  *opts.routerCAFile,
+				PodCertFile:   *opts.podCertFile,
+				PodKeyFile:    *opts.podKeyFile,
+			})
+			if sbErr != nil {
+				return nil, nil, fmt.Errorf("initialize Agent Substrate Control ActorBackend: %w", sbErr)
+			}
+			backend = sb
+			backendClose = func() { _ = sb.Close() }
+		} else if strings.TrimSpace(*opts.routerURL) != "" {
 			rb, rbErr := dispatcher.NewHTTPRouterActorBackend(dispatcher.HTTPRouterBackendConfig{
 				RouterURL:    *opts.routerURL,
 				RouterCAFile: *opts.routerCAFile,
@@ -150,12 +174,18 @@ func buildDispatcherModeHandler(
 			PresenterToken: *opts.presenterToken,
 		})
 		if err != nil {
+			if backendClose != nil {
+				backendClose()
+			}
 			if tempDispatcherDir != "" {
 				_ = os.RemoveAll(tempDispatcherDir)
 			}
 			return nil, nil, fmt.Errorf("initialize Dispatcher: %w", err)
 		}
 		if err := disp.Start(ctx); err != nil {
+			if backendClose != nil {
+				backendClose()
+			}
 			if tempDispatcherDir != "" {
 				_ = os.RemoveAll(tempDispatcherDir)
 			}
@@ -166,6 +196,9 @@ func buildDispatcherModeHandler(
 			slog.String("atespace", atespace))
 		closeFn := func() {
 			disp.Close()
+			if backendClose != nil {
+				backendClose()
+			}
 			if tempDispatcherDir != "" {
 				_ = os.RemoveAll(tempDispatcherDir)
 			}
