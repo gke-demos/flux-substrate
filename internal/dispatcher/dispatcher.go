@@ -47,6 +47,7 @@ type Config struct {
 	SlotsPerWorker int
 	CRSyncInterval time.Duration
 	WebhookSecret  string
+	PresenterToken string
 }
 
 type slotHandle struct {
@@ -64,6 +65,7 @@ type tenantState struct {
 	grKey             client.ObjectKey
 	targetNamespace   string
 	repoURL           string
+	baselineRepoURL   string
 	branch            string
 	path              string
 	prune             bool
@@ -123,6 +125,7 @@ type Dispatcher struct {
 	workerCount    int
 	slotsPerWorker int
 	crSyncPeriod   time.Duration
+	auth           *presenterAuthManager
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
@@ -230,6 +233,7 @@ func New(cfg Config) (*Dispatcher, error) {
 		workerCount:      workerCount,
 		slotsPerWorker:   slotsPerWorker,
 		crSyncPeriod:     syncPeriod,
+		auth:             newPresenterAuthManager(cfg.PresenterToken),
 		tenants:          make(map[string]*tenantState),
 		slots:            slots,
 		freeSlots:        freeSlots,
@@ -237,12 +241,13 @@ func New(cfg Config) (*Dispatcher, error) {
 		scheduleWakeupCh: make(chan struct{}, 1),
 	}
 
-	// TODO(security): Optional PRESENTER_TOKEN session/header write gating is implemented
-	// in Issue #5 across all mutating POST routes while keeping GET telemetry open.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /readyz", d.handleReadyz)
 	mux.HandleFunc("GET /api/state", d.handleGetState)
 	mux.HandleFunc("GET /api/tenants/{id}", d.handleGetTenant)
+	mux.HandleFunc("GET /api/auth/session", d.handleAuthSession)
+	mux.HandleFunc("POST /api/auth/login", d.handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/logout", d.handleAuthLogout)
 	d.registerActionRoutes(mux)
 
 	d.handler = httputil.SecurityHeaders(mux)
@@ -350,6 +355,7 @@ func (d *Dispatcher) SyncCRs(ctx context.Context) error {
 				grKey:           grKey,
 				targetNamespace: targetNS,
 				repoURL:         repoURL,
+				baselineRepoURL: repoURL,
 				branch:          branch,
 				path:            overlayPath,
 				prune:           ks.Spec.Prune,
@@ -841,12 +847,20 @@ func (d *Dispatcher) recordCompletedTurn(
 	case crashed:
 		ts.ready = false
 		ts.stalled = true
-		ts.failedStage = "crash"
-		ts.lastError = crashErr.Error()
-		ts.statusMessage = crashErr.Error()
+		if res.FailedStage != "" {
+			ts.failedStage = res.FailedStage
+		} else {
+			ts.failedStage = "oom"
+		}
+		errText := strings.TrimSpace(res.Error)
+		if errText == "" {
+			errText = crashErr.Error()
+		}
+		ts.lastError = errText
+		ts.statusMessage = errText
 		ts.nextDueAt = time.Time{} // Crashed actors stay halted until RevertActor.
 		outcome = "crashed"
-		eventMsg = crashErr.Error()
+		eventMsg = errText
 	default:
 		ts.ready = false
 		ts.stalled = false
@@ -1073,8 +1087,9 @@ func (d *Dispatcher) SnapshotState() FleetStateResponse {
 	}
 
 	return FleetStateResponse{
-		Mode:     d.mode,
-		Atespace: d.atespace,
+		Mode:         d.mode,
+		Atespace:     d.atespace,
+		AuthRequired: d.auth.isEnabled(),
 		Summary: FleetSummary{
 			TotalTenants:    len(summaries),
 			ReadyTenants:    readyCount,

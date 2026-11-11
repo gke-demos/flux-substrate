@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
+	"sigs.k8s.io/yaml"
 
 	"github.com/gke-demos/flux-substrate/internal/httputil"
 )
@@ -45,39 +46,53 @@ const (
 	defaultTrustBundleFile   = "/run/ate/trust-bundle.pem"
 	defaultPlaceholderBearer = "actor-placeholder"
 	maxReconcileBodyBytes    = 1 << 20 // 1 MiB reconcile request payload cap
+
+	// DefaultMaxRenderBytes bounds rendered Kustomize YAML output inside a Workflow Actor
+	// so runaway overlays deterministically trigger sandbox OOM failure without exhausting
+	// shared host memory in --mode=local or unit tests.
+	DefaultMaxRenderBytes int64 = 4 << 20 // 4 MiB
+)
+
+var (
+	errRenderMemoryLimitExceeded = errors.New("sandbox memory limit exceeded")
+	errEgressPolicyDenied        = errors.New("egress policy denied outbound fetch")
 )
 
 // Config configures a single-tenant Workflow Actor HTTP server.
 type Config struct {
-	ActorName         string
-	Atespace          string
-	ActorUID          string
-	DurableDir        string
-	SystemInfoDir     string
-	TrustBundleFile   string
-	TrustBundlePEM    []byte
-	GitBearerToken    string
-	KubeBridgeURL     string
-	KubeBearerToken   string
-	KubeWrapTransport func(http.RoundTripper) http.RoundTripper
-	KubeconfigPath    string
-	RestConfig        *rest.Config
+	ActorName          string
+	Atespace           string
+	ActorUID           string
+	DurableDir         string
+	SystemInfoDir      string
+	TrustBundleFile    string
+	TrustBundlePEM     []byte
+	GitBearerToken     string
+	KubeBridgeURL      string
+	KubeBearerToken    string
+	KubeWrapTransport  func(http.RoundTripper) http.RoundTripper
+	KubeconfigPath     string
+	RestConfig         *rest.Config
+	MaxRenderBytes     int64
+	AllowedEgressHosts []string
 }
 
 // Server serves GET /readyz and POST /reconcile inside a Workflow Actor sandbox.
 type Server struct {
-	actorName         string
-	atespace          string
-	actorUID          string
-	durableDir        string
-	trustBundleFile   string
-	trustBundlePEM    []byte
-	gitBearerToken    string
-	kubeBridgeURL     string
-	kubeBearerToken   string
-	kubeWrapTransport func(http.RoundTripper) http.RoundTripper
-	kubeconfigPath    string
-	baseRestConfig    *rest.Config
+	actorName          string
+	atespace           string
+	actorUID           string
+	durableDir         string
+	trustBundleFile    string
+	trustBundlePEM     []byte
+	gitBearerToken     string
+	kubeBridgeURL      string
+	kubeBearerToken    string
+	kubeWrapTransport  func(http.RoundTripper) http.RoundTripper
+	kubeconfigPath     string
+	baseRestConfig     *rest.Config
+	maxRenderBytes     int64
+	allowedEgressHosts map[string]bool
 
 	turnSem     chan struct{}
 	turnCounter atomic.Int64
@@ -152,20 +167,38 @@ func NewServer(cfg Config) (*Server, error) {
 		kubeBearer = defaultPlaceholderBearer
 	}
 
+	maxRenderBytes := cfg.MaxRenderBytes
+	if maxRenderBytes == 0 {
+		maxRenderBytes = DefaultMaxRenderBytes
+	}
+
+	var allowedHosts map[string]bool
+	if len(cfg.AllowedEgressHosts) > 0 {
+		allowedHosts = make(map[string]bool, len(cfg.AllowedEgressHosts)*2)
+		for _, h := range cfg.AllowedEgressHosts {
+			norm := normalizeEgressHost(h)
+			if norm != "" {
+				allowedHosts[norm] = true
+			}
+		}
+	}
+
 	s := &Server{
-		actorName:         actorName,
-		atespace:          atespace,
-		actorUID:          actorUID,
-		durableDir:        durableDir,
-		trustBundleFile:   resolvedTrustFile,
-		trustBundlePEM:    trustPEM,
-		gitBearerToken:    gitBearer,
-		kubeBridgeURL:     strings.TrimSpace(cfg.KubeBridgeURL),
-		kubeBearerToken:   kubeBearer,
-		kubeWrapTransport: cfg.KubeWrapTransport,
-		kubeconfigPath:    strings.TrimSpace(cfg.KubeconfigPath),
-		baseRestConfig:    cfg.RestConfig,
-		turnSem:           make(chan struct{}, 1),
+		actorName:          actorName,
+		atespace:           atespace,
+		actorUID:           actorUID,
+		durableDir:         durableDir,
+		trustBundleFile:    resolvedTrustFile,
+		trustBundlePEM:     trustPEM,
+		gitBearerToken:     gitBearer,
+		kubeBridgeURL:      strings.TrimSpace(cfg.KubeBridgeURL),
+		kubeBearerToken:    kubeBearer,
+		kubeWrapTransport:  cfg.KubeWrapTransport,
+		kubeconfigPath:     strings.TrimSpace(cfg.KubeconfigPath),
+		baseRestConfig:     cfg.RestConfig,
+		maxRenderBytes:     maxRenderBytes,
+		allowedEgressHosts: allowedHosts,
+		turnSem:            make(chan struct{}, 1),
 	}
 
 	mux := http.NewServeMux()
@@ -274,6 +307,11 @@ func (s *Server) executeTurn(ctx context.Context, req ReconcileRequest) (Reconci
 	res.CacheHit = cacheHit
 	if err != nil {
 		res.Timings.TotalMs = time.Since(turnStart).Milliseconds()
+		if errors.Is(err, errEgressPolicyDenied) {
+			res.Error = fmt.Sprintf("egress policy denied git source sync: %v", err)
+			res.FailedStage = "egress"
+			return res, http.StatusForbidden
+		}
 		res.Error = fmt.Sprintf("git source sync failed: %v", err)
 		res.FailedStage = "fetch"
 		return res, http.StatusBadGateway
@@ -283,11 +321,21 @@ func (s *Server) executeTurn(ctx context.Context, req ReconcileRequest) (Reconci
 
 	// Stage 2: Render Kustomize overlay in-process with krusty.
 	renderStart := time.Now()
-	renderedObjs, err := renderKustomizeOverlay(checkoutDir, overlayRel)
+	renderedObjs, err := s.renderKustomizeOverlay(checkoutDir, overlayRel)
 	res.RenderMs = time.Since(renderStart).Milliseconds()
 	res.Timings.RenderMs = res.RenderMs
 	if err != nil {
 		res.Timings.TotalMs = time.Since(turnStart).Milliseconds()
+		if errors.Is(err, errRenderMemoryLimitExceeded) {
+			res.Error = fmt.Sprintf("kustomize build exceeded sandbox memory limit: %v", err)
+			res.FailedStage = "oom"
+			return res, http.StatusInsufficientStorage
+		}
+		if errors.Is(err, errEgressPolicyDenied) {
+			res.Error = fmt.Sprintf("kustomize remote-base fetch denied by EgressPolicy: %v", err)
+			res.FailedStage = "egress"
+			return res, http.StatusForbidden
+		}
 		res.Error = fmt.Sprintf("kustomize build failed: %v", err)
 		res.FailedStage = "render"
 		return res, http.StatusUnprocessableEntity
@@ -392,6 +440,9 @@ func (s *Server) checkoutSource(ctx context.Context, checkoutDir, repoURL, branc
 		transportType = git.HTTP
 	default:
 		return "", false, fmt.Errorf("unsupported git scheme %q (expected http or https)", parsedURL.Scheme)
+	}
+	if !s.isURLHostAllowed(parsedURL) {
+		return "", false, fmt.Errorf("%w: host %q is not permitted by actor EgressPolicy (NXDOMAIN / 403)", errEgressPolicyDenied, parsedURL.Host)
 	}
 
 	if sha, warmOK, warmErr := s.tryWarmFetch(ctx, checkoutDir, repoURL, branch); warmOK || warmErr != nil {
@@ -511,8 +562,21 @@ func resolveWarmTargetHash(repo *extgogit.Repository, remoteRefName plumbing.Ref
 	return head.Hash(), nil
 }
 
-func renderKustomizeOverlay(checkoutDir, overlayRel string) ([]*unstructured.Unstructured, error) {
+func (s *Server) renderKustomizeOverlay(checkoutDir, overlayRel string) ([]*unstructured.Unstructured, error) {
 	targetDir, err := httputil.SecureRelativeDir(checkoutDir, overlayRel)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.maxRenderBytes > 0 {
+		if rawBytes, sizeErr := measureOverlayFileBytes(targetDir, s.maxRenderBytes*2); sizeErr != nil {
+			return nil, sizeErr
+		} else if rawBytes > s.maxRenderBytes*2 {
+			return nil, fmt.Errorf("%w: overlay inputs (%d bytes) exceed budget (%d bytes)", errRenderMemoryLimitExceeded, rawBytes, s.maxRenderBytes)
+		}
+	}
+
+	remoteRefs, err := s.validateOverlayRemoteReferences(targetDir)
 	if err != nil {
 		return nil, err
 	}
@@ -520,12 +584,18 @@ func renderKustomizeOverlay(checkoutDir, overlayRel string) ([]*unstructured.Uns
 	kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
 	resMap, err := kustomizer.Run(filesys.MakeFsOnDisk(), targetDir)
 	if err != nil {
+		if len(remoteRefs) > 0 && looksLikeRemoteEgressFailure(err) {
+			return nil, fmt.Errorf("%w: outbound remote-base fetch %q blocked (NXDOMAIN / 403): %v", errEgressPolicyDenied, remoteRefs[0], err)
+		}
 		return nil, err
 	}
 
 	yamlBytes, err := resMap.AsYaml()
 	if err != nil {
 		return nil, fmt.Errorf("marshal kustomize output: %w", err)
+	}
+	if s.maxRenderBytes > 0 && int64(len(yamlBytes)) > s.maxRenderBytes {
+		return nil, fmt.Errorf("%w: rendered output (%d bytes) exceeds actor ceiling (%d bytes)", errRenderMemoryLimitExceeded, len(yamlBytes), s.maxRenderBytes)
 	}
 	if len(bytes.TrimSpace(yamlBytes)) == 0 {
 		return nil, nil
@@ -536,6 +606,222 @@ func renderKustomizeOverlay(checkoutDir, overlayRel string) ([]*unstructured.Uns
 		return nil, fmt.Errorf("decode rendered manifests: %w", err)
 	}
 	return objs, nil
+}
+
+func measureOverlayFileBytes(rootDir string, stopAfter int64) (int64, error) {
+	var total int64
+	errStop := errors.New("stop walk")
+	err := filepath.WalkDir(rootDir, func(cur string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if d.Name() == extgogit.GitDirName {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		if stopAfter > 0 && total > stopAfter {
+			return errStop
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errStop) {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (s *Server) validateOverlayRemoteReferences(rootDir string) ([]string, error) {
+	var remoteRefs []string
+	err := filepath.WalkDir(rootDir, func(cur string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if d.Name() == extgogit.GitDirName {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() || !isKustomizationFilename(d.Name()) {
+			return nil
+		}
+		raw, err := os.ReadFile(cur)
+		if err != nil {
+			return err
+		}
+		refs := extractKustomizeReferences(raw)
+		for _, ref := range refs {
+			remoteURL, blockedProto, isRemote := classifyRemoteRef(ref)
+			if !isRemote {
+				continue
+			}
+			remoteRefs = append(remoteRefs, ref)
+			if blockedProto {
+				return fmt.Errorf("%w: non-HTTPS remote reference %q is blocked by sandbox EgressPolicy (403 Forbidden)", errEgressPolicyDenied, ref)
+			}
+			if !s.isURLHostAllowed(remoteURL) {
+				return fmt.Errorf("%w: remote base %q targets unapproved host %q outside actor EgressPolicy (NXDOMAIN / 403 Forbidden)", errEgressPolicyDenied, ref, remoteURL.Host)
+			}
+		}
+		return nil
+	})
+	return remoteRefs, err
+}
+
+func isKustomizationFilename(name string) bool {
+	return name == "kustomization.yaml" || name == "kustomization.yml" || name == "Kustomization"
+}
+
+func extractKustomizeReferences(rawYAML []byte) []string {
+	var doc map[string]any
+	if err := yaml.Unmarshal(rawYAML, &doc); err != nil || doc == nil {
+		return nil
+	}
+	var out []string
+	addStr := func(v any) {
+		if s, ok := v.(string); ok {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+	}
+	for _, listKey := range []string{
+		"resources", "bases", "components", "configurations",
+		"crds", "generators", "transformers", "validators",
+	} {
+		items, _ := doc[listKey].([]any)
+		for _, item := range items {
+			addStr(item)
+		}
+	}
+	for _, patchKey := range []string{"patches", "patchesStrategicMerge", "patchesJson6902"} {
+		items, _ := doc[patchKey].([]any)
+		for _, item := range items {
+			addStr(item)
+			if m, ok := item.(map[string]any); ok {
+				addStr(m["path"])
+			}
+		}
+	}
+	if openapiMap, ok := doc["openapi"].(map[string]any); ok {
+		addStr(openapiMap["path"])
+	}
+	if charts, ok := doc["helmCharts"].([]any); ok {
+		for _, item := range charts {
+			if m, ok := item.(map[string]any); ok {
+				addStr(m["repo"])
+			}
+		}
+	}
+	for _, genKey := range []string{"configMapGenerator", "secretGenerator"} {
+		items, _ := doc[genKey].([]any)
+		for _, item := range items {
+			if m, ok := item.(map[string]any); ok {
+				addStr(m["env"])
+				for _, subKey := range []string{"files", "envs"} {
+					subItems, _ := m[subKey].([]any)
+					for _, sub := range subItems {
+						s, ok := sub.(string)
+						if !ok {
+							continue
+						}
+						if _, afterEq, hasEq := strings.Cut(s, "="); hasEq {
+							addStr(afterEq)
+						} else {
+							addStr(s)
+						}
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func classifyRemoteRef(ref string) (*url.URL, bool, bool) {
+	lower := strings.ToLower(strings.TrimSpace(ref))
+	switch {
+	case strings.HasPrefix(lower, "ssh://"),
+		strings.HasPrefix(lower, "git::"),
+		strings.HasPrefix(lower, "git@"),
+		strings.HasPrefix(lower, "git://"):
+		return nil, true, true
+	case strings.HasPrefix(lower, "github.com/"):
+		u, err := url.Parse("https://" + strings.TrimSpace(ref))
+		if err != nil || u.Host == "" {
+			return nil, true, true
+		}
+		return u, false, true
+	case strings.HasPrefix(lower, "http://"), strings.HasPrefix(lower, "https://"):
+		u, err := url.Parse(strings.TrimSpace(ref))
+		if err != nil || u.Host == "" {
+			return nil, true, true
+		}
+		return u, false, true
+	default:
+		return nil, false, false
+	}
+}
+
+func (s *Server) isURLHostAllowed(u *url.URL) bool {
+	if len(s.allowedEgressHosts) == 0 {
+		return true
+	}
+	if u == nil || u.Host == "" {
+		return false
+	}
+	norm := normalizeEgressHost(u.Host)
+	if s.allowedEgressHosts[norm] {
+		return true
+	}
+	if strings.EqualFold(u.Scheme, "https") && u.Port() == "443" && s.allowedEgressHosts[strings.ToLower(u.Hostname())] {
+		return true
+	}
+	if strings.EqualFold(u.Scheme, "http") && u.Port() == "80" && s.allowedEgressHosts[strings.ToLower(u.Hostname())] {
+		return true
+	}
+	return false
+}
+
+func normalizeEgressHost(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func looksLikeRemoteEgressFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, token := range []string{
+		"no such host",
+		"nxdomain",
+		"status code 403",
+		"forbidden",
+		"http error",
+		"dial tcp",
+		"connection refused",
+		"network is unreachable",
+		"i/o timeout",
+		"tls:",
+		"x509:",
+		"url is a git repository",
+		"executable file not found",
+	} {
+		if strings.Contains(msg, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultUnsetNamespaces(mapper meta.RESTMapper, objs []*unstructured.Unstructured, targetNS string) error {

@@ -63,6 +63,7 @@ type Revision struct {
 type CommitChange struct {
 	Upsert      map[string]string `json:"upsert,omitempty"`
 	Delete      []string          `json:"delete,omitempty"`
+	ReplaceTree bool              `json:"replaceTree,omitempty"`
 	Message     string            `json:"message"`
 	AuthorName  string            `json:"authorName,omitempty"`
 	AuthorEmail string            `json:"authorEmail,omitempty"`
@@ -265,15 +266,17 @@ func (s *Server) commitLocked(tenantID string, sto *filesystem.Storage, change C
 				return Revision{}, fmt.Errorf("load parent tree: %w", err)
 			}
 			oldTree = t
-			if err := t.Files().ForEach(func(f *object.File) error {
-				content, err := f.Contents()
-				if err != nil {
-					return err
+			if !change.ReplaceTree {
+				if err := t.Files().ForEach(func(f *object.File) error {
+					content, err := f.Contents()
+					if err != nil {
+						return err
+					}
+					fileContents[f.Name] = []byte(content)
+					return nil
+				}); err != nil {
+					return Revision{}, fmt.Errorf("read parent files: %w", err)
 				}
-				fileContents[f.Name] = []byte(content)
-				return nil
-			}); err != nil {
-				return Revision{}, fmt.Errorf("read parent files: %w", err)
 			}
 		}
 	}

@@ -26,6 +26,7 @@ type dispatcherCLIFlags struct {
 	routerCAFile   *string
 	podCertFile    *string
 	podKeyFile     *string
+	presenterToken *string
 }
 
 func registerDispatcherFlags(fs *flag.FlagSet) dispatcherCLIFlags {
@@ -43,6 +44,7 @@ func registerDispatcherFlags(fs *flag.FlagSet) dispatcherCLIFlags {
 		routerCAFile:   fs.String("router-ca-file", os.Getenv("ATENET_ROUTER_CA_FILE"), "CA bundle PEM path for atenet-router TLS"),
 		podCertFile:    fs.String("pod-cert-file", os.Getenv("ATE_POD_CERT_FILE"), "Pod identity mTLS client certificate PEM path"),
 		podKeyFile:     fs.String("pod-key-file", os.Getenv("ATE_POD_KEY_FILE"), "Pod identity mTLS client key PEM path"),
+		presenterToken: fs.String("presenter-token", os.Getenv("PRESENTER_TOKEN"), "Optional PRESENTER_TOKEN gating mutating Mission-Control POST endpoints"),
 	}
 }
 
@@ -70,11 +72,12 @@ func buildDispatcherModeHandler(
 			restCfg = loaded
 		}
 		stack, err := dispatcher.NewLocalStack(ctx, dispatcher.LocalStackConfig{
-			BaseDir:       *opts.dataDir,
-			Atespace:      atespace,
-			TenantCount:   *opts.tenantCount,
-			RestConfig:    restCfg,
-			WebhookSecret: os.Getenv("WEBHOOK_SECRET"),
+			BaseDir:        *opts.dataDir,
+			Atespace:       atespace,
+			TenantCount:    *opts.tenantCount,
+			RestConfig:     restCfg,
+			WebhookSecret:  os.Getenv("WEBHOOK_SECRET"),
+			PresenterToken: *opts.presenterToken,
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("initialize --mode=local fleet: %w", err)
@@ -144,6 +147,7 @@ func buildDispatcherModeHandler(
 			Backend:        backend,
 			KubeBridgeURL:  kubeBridgeURL,
 			WebhookSecret:  os.Getenv("WEBHOOK_SECRET"),
+			PresenterToken: *opts.presenterToken,
 		})
 		if err != nil {
 			if tempDispatcherDir != "" {
